@@ -1,7 +1,8 @@
-import React from 'react'
-import { Activity, RefreshCw, Wifi, WifiOff, LayoutGrid, Wallet } from 'lucide-react'
+import React, { useState } from 'react'
+import { Activity, RefreshCw, Wifi, WifiOff, LayoutGrid, Wallet, Info } from 'lucide-react'
 import WalletButton from './WalletButton'
 import SearchBar from './SearchBar'
+import AboutModal from './AboutModal'
 import { useMarkets } from '../hooks/useMarkets'
 
 const NAV_ITEMS = [
@@ -11,6 +12,7 @@ const NAV_ITEMS = [
 
 export default function Header({ page, onPageChange }) {
   const { usingMockData, allMarkets, refresh, loading } = useMarkets()
+  const [aboutOpen, setAboutOpen] = useState(false)
 
   return (
     <header className="bg-terminal-surface border-b border-terminal-border sticky top-0 z-40">
@@ -76,7 +78,7 @@ export default function Header({ page, onPageChange }) {
           {page !== 'portfolio' && <SearchBar />}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1 sm:gap-2">
           {page !== 'portfolio' && (
             <button
               onClick={refresh}
@@ -87,9 +89,18 @@ export default function Header({ page, onPageChange }) {
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>
           )}
+          <button
+            onClick={() => setAboutOpen(true)}
+            className="p-2 rounded-lg text-terminal-muted hover:text-terminal-text hover:bg-terminal-highlight transition-all"
+            title="About PredictFlow"
+            aria-label="About PredictFlow"
+          >
+            <Info size={16} />
+          </button>
           <WalletButton />
         </div>
       </div>
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
 
       <nav className="md:hidden flex items-center gap-1 px-4 pb-2">
         {NAV_ITEMS.map(item => {

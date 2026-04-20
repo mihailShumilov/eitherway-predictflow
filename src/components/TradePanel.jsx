@@ -2,12 +2,13 @@ import React, { useState, useCallback, useMemo } from 'react'
 import {
   ArrowUpCircle, ArrowDownCircle, AlertCircle, Check, Loader2,
   Eye, ShoppingCart, Target, TrendingDown, TrendingUp, Zap, Repeat, StopCircle,
-  Lock, Info, Wallet
+  Lock, Info, Wallet, ShieldCheck, ShieldAlert
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 import { useUsdcBalance } from '../hooks/useUsdcBalance'
+import { useKyc } from '../hooks/useKyc'
 
 const DFLOW_QUOTE_URL = 'https://dev-quote-api.dflow.net/quote'
 const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
@@ -124,7 +125,8 @@ export default function TradePanel({ market }) {
   const { connected, connect, address } = useWallet()
   const { addOrder } = useConditionalOrders()
   const { strategiesForMarket, startStrategy, stopStrategy } = useDCA()
-  const { balance: usdcBalance, loading: usdcLoading } = useUsdcBalance(address)
+  const { balance: usdcBalance } = useUsdcBalance(address)
+  const { verified: kycVerified, requireKyc } = useKyc()
   const [side, setSide] = useState(market?.side || 'yes')
   const [orderType, setOrderType] = useState('market')
   const [amount, setAmount] = useState('')
@@ -197,6 +199,7 @@ export default function TradePanel({ market }) {
 
   const handleMarketTrade = useCallback(async () => {
     if (!connected) { connect(); return }
+    if (!requireKyc()) return
     if (!amount || parseFloat(amount) <= 0) return
 
     setSubmitting(true)
@@ -257,10 +260,11 @@ export default function TradePanel({ market }) {
     } finally {
       setSubmitting(false)
     }
-  }, [connected, connect, amount, side, price, shares, market, address])
+  }, [connected, connect, requireKyc, amount, side, price, shares, market, address])
 
   const handleConditionalOrder = useCallback(() => {
     if (!connected) { connect(); return }
+    if (!requireKyc()) return
     if (!amount || parseFloat(amount) <= 0) return
     if (!triggerPrice || parseFloat(triggerPrice) <= 0 || parseFloat(triggerPrice) >= 100) return
 
@@ -294,7 +298,7 @@ export default function TradePanel({ market }) {
     setResult({ success: true, conditional: true, order: newOrder })
     setAmount('')
     setTriggerPrice('')
-  }, [connected, connect, amount, triggerPrice, effectiveOrderType, side, price, market, addOrder])
+  }, [connected, connect, requireKyc, amount, triggerPrice, effectiveOrderType, side, price, market, addOrder])
 
   const dcaPerBuyNum = parseFloat(dcaPerBuy) || 0
   const dcaBudgetNum = parseFloat(dcaBudget) || 0
@@ -303,6 +307,7 @@ export default function TradePanel({ market }) {
 
   const handleStartDca = useCallback(() => {
     if (!connected) { connect(); return }
+    if (!requireKyc()) return
     if (dcaPerBuyNum <= 0 || dcaBudgetNum <= 0 || dcaPurchases <= 0) {
       setResult({ success: false, error: 'Enter valid amount and budget' })
       return
@@ -325,7 +330,7 @@ export default function TradePanel({ market }) {
     setResult({ success: true, dca: true, strategy })
     setDcaPerBuy('')
     setDcaBudget('')
-  }, [connected, connect, dcaPerBuyNum, dcaBudgetNum, dcaPurchases, startStrategy, market, side, dcaFrequency, price])
+  }, [connected, connect, requireKyc, dcaPerBuyNum, dcaBudgetNum, dcaPurchases, startStrategy, market, side, dcaFrequency, price])
 
   const handleSubmit = effectiveOrderType === 'market'
     ? handleMarketTrade
@@ -339,16 +344,25 @@ export default function TradePanel({ market }) {
         <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">
           Trade
         </h3>
-        {isClosed && (
+        {isClosed ? (
           <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-muted/10 border border-terminal-muted/40 text-terminal-muted">
             <Lock size={10} />
             Trading Closed
           </span>
-        )}
-        {!isClosed && !connected && (
+        ) : !connected ? (
           <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-yellow/10 border border-terminal-yellow/30 text-terminal-yellow">
             <Wallet size={10} />
             Wallet Required
+          </span>
+        ) : !kycVerified ? (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-accent/10 border border-terminal-accent/30 text-terminal-accent">
+            <ShieldAlert size={10} />
+            KYC Required
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-green/10 border border-terminal-green/30 text-terminal-green">
+            <ShieldCheck size={10} />
+            Verified
           </span>
         )}
       </div>
@@ -658,6 +672,11 @@ export default function TradePanel({ market }) {
                 <Wallet size={14} />
                 Connect Wallet to Trade
               </>
+            ) : !kycVerified ? (
+              <>
+                <ShieldCheck size={14} />
+                Verify Identity to Trade
+              </>
             ) : insufficientUsdc ? (
               <>
                 <AlertCircle size={14} />
@@ -765,6 +784,16 @@ export default function TradePanel({ market }) {
                       <Lock size={14} />
                       Trading Closed
                     </>
+                  ) : !connected ? (
+                    <>
+                      <Wallet size={14} />
+                      Connect Wallet to Start DCA
+                    </>
+                  ) : !kycVerified ? (
+                    <>
+                      <ShieldCheck size={14} />
+                      Verify Identity to Start DCA
+                    </>
                   ) : insufficientDcaBudget ? (
                     <>
                       <AlertCircle size={14} />
@@ -773,7 +802,7 @@ export default function TradePanel({ market }) {
                   ) : (
                     <>
                       <Repeat size={14} />
-                      {connected ? 'Start DCA' : 'Connect Wallet to Start DCA'}
+                      Start DCA
                     </>
                   )}
                 </button>

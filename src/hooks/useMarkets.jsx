@@ -105,7 +105,6 @@ export function MarketsProvider({ children }) {
       setUsingMockData(false)
       setCachedData({ events: normalizedEvents, categories: catsData, isMock: false })
     } catch (err) {
-      console.warn('DFlow API unavailable, using mock data:', err.message)
       setEvents(mockEvents)
       setMarkets(flattenMarkets(mockEvents))
       setCategories(mockCategories)

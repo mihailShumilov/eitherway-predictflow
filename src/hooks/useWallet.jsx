@@ -71,8 +71,8 @@ export function WalletProvider({ children }) {
         localStorage.setItem('predictflow_wallet', pubkey)
         localStorage.setItem('predictflow_wallet_id', walletId)
       }
-    } catch (err) {
-      console.error('Wallet connect error:', err)
+    } catch {
+      // user rejected or provider threw — surface nothing; UI stays in disconnected state
     } finally {
       setConnecting(false)
     }

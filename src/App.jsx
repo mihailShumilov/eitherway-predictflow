@@ -4,6 +4,8 @@ import { WalletProvider } from './hooks/useWallet'
 import { OrdersProvider, useConditionalOrders } from './hooks/useConditionalOrders'
 import { DCAProvider } from './hooks/useDCA'
 import { LivePricesProvider } from './hooks/useLivePrices'
+import { KycProvider } from './hooks/useKyc'
+import KycModal from './components/KycModal'
 import Header from './components/Header'
 import CategorySidebar from './components/CategorySidebar'
 import MarketGrid from './components/MarketGrid'
@@ -58,6 +60,7 @@ function AppLayout() {
   return (
     <div className="min-h-screen bg-terminal-bg text-terminal-text flex flex-col">
       <OrderNotifications />
+      <KycModal />
       <Header page={page} onPageChange={setPage} />
       <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4 max-w-screen-2xl mx-auto w-full">
         {page === 'explore' ? (
@@ -88,15 +91,17 @@ function AppLayout() {
 export default function App() {
   return (
     <WalletProvider>
-      <MarketsProvider>
-        <LivePricesProvider>
-          <OrdersProvider>
-            <DCAProvider>
-              <AppLayout />
-            </DCAProvider>
-          </OrdersProvider>
-        </LivePricesProvider>
-      </MarketsProvider>
+      <KycProvider>
+        <MarketsProvider>
+          <LivePricesProvider>
+            <OrdersProvider>
+              <DCAProvider>
+                <AppLayout />
+              </DCAProvider>
+            </OrdersProvider>
+          </LivePricesProvider>
+        </MarketsProvider>
+      </KycProvider>
     </WalletProvider>
   )
 }
