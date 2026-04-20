@@ -3,10 +3,12 @@ import { format, formatDistanceToNowStrict } from 'date-fns'
 import {
   Wallet, TrendingUp, TrendingDown, DollarSign, Briefcase,
   RefreshCw, Loader2, AlertCircle, ArrowUpRight, ArrowDownRight, Clock,
+  Repeat, StopCircle,
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { usePortfolio } from '../hooks/usePortfolio'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 import ActiveOrders from './ActiveOrders'
 
 function daysUntil(iso) {
@@ -31,6 +33,88 @@ function StatCard({ icon: Icon, label, value, tone = 'text-terminal-text', sub }
       </div>
       <div className={`text-2xl font-mono font-semibold ${tone}`}>{value}</div>
       {sub && <div className="text-xs text-terminal-muted mt-1 font-mono">{sub}</div>}
+    </div>
+  )
+}
+
+function DcaStrategiesSection({ strategies, onStop }) {
+  if (strategies.length === 0) return null
+  const activeCount = strategies.filter(s => s.status === 'active').length
+
+  return (
+    <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-terminal-border flex items-center gap-2">
+        <Repeat size={12} className="text-terminal-accent" />
+        <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">
+          DCA Strategies
+        </h3>
+        {activeCount > 0 && (
+          <span className="text-[10px] font-mono bg-terminal-accent/10 text-terminal-accent px-1.5 py-0.5 rounded border border-terminal-accent/30">
+            {activeCount} active
+          </span>
+        )}
+      </div>
+      <div className="divide-y divide-terminal-border/50">
+        {strategies.map(s => {
+          const completed = s.executions.length
+          const total = s.totalPurchases
+          const spent = s.executions.reduce((sum, e) => sum + e.amount, 0)
+          const pct = total > 0 ? Math.min(100, (completed / total) * 100) : 0
+          const freqLabel = DCA_FREQUENCIES.find(f => f.key === s.frequency)?.label || s.frequency
+          const isActive = s.status === 'active'
+          const barClass = s.status === 'cancelled'
+            ? 'bg-terminal-muted'
+            : s.status === 'completed'
+              ? 'bg-terminal-green'
+              : 'bg-terminal-accent'
+          return (
+            <div key={s.id} className="px-4 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-bold uppercase ${s.side === 'yes' ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                      {s.side}
+                    </span>
+                    <span className="text-xs text-terminal-text truncate">{s.question}</span>
+                  </div>
+                  {s.eventTitle && (
+                    <p className="text-[10px] text-terminal-muted truncate mt-0.5">{s.eventTitle}</p>
+                  )}
+                </div>
+                <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${
+                  isActive
+                    ? 'bg-terminal-accent/10 border-terminal-accent/30 text-terminal-accent'
+                    : s.status === 'completed'
+                      ? 'bg-terminal-green/10 border-terminal-green/30 text-terminal-green'
+                      : 'bg-terminal-muted/10 border-terminal-muted/30 text-terminal-muted'
+                }`}>
+                  {s.status}
+                </span>
+              </div>
+
+              <div className="text-[10px] text-terminal-muted font-mono">
+                {completed} of {total} purchases · ${spent.toFixed(2)} / ${s.totalBudget.toFixed(2)} · ${s.amountPerBuy.toFixed(2)} every {freqLabel}
+              </div>
+
+              <div className="h-1.5 bg-terminal-card rounded-full overflow-hidden">
+                <div className={`h-full ${barClass}`} style={{ width: `${pct}%` }} />
+              </div>
+
+              {isActive && onStop && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => onStop(s.id)}
+                    className="flex items-center gap-1 text-[10px] text-terminal-red/80 hover:text-terminal-red transition-colors"
+                  >
+                    <StopCircle size={10} />
+                    Stop DCA
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -183,6 +267,7 @@ export default function Portfolio() {
   const { connected, connect, shortAddress } = useWallet()
   const { positions, totalValue, totalPnl, count, loading, error, source, refresh } = usePortfolio()
   const { orders } = useConditionalOrders()
+  const { strategies: dcaStrategies, stopStrategy } = useDCA()
   const hasOrders = orders.length > 0
 
   if (!connected) {
@@ -265,6 +350,8 @@ export default function Portfolio() {
           <SettlementTimeline positions={positions} />
         </>
       )}
+
+      <DcaStrategiesSection strategies={dcaStrategies} onStop={stopStrategy} />
 
       <div>
         <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider mb-2">

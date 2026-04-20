@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useMemo } from 'react'
 import {
   ArrowUpCircle, ArrowDownCircle, AlertCircle, Check, Loader2,
-  Eye, ShoppingCart, Target, TrendingDown, TrendingUp, Zap
+  Eye, ShoppingCart, Target, TrendingDown, TrendingUp, Zap, Repeat, StopCircle
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 
 const DFLOW_QUOTE_URL = 'https://dev-quote-api.dflow.net/quote'
 const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
@@ -21,7 +22,92 @@ const ORDER_TABS = [
   { key: 'limit', label: 'Limit', icon: Target },
   { key: 'stop-loss', label: 'Stop-Loss', icon: TrendingDown },
   { key: 'take-profit', label: 'Take-Profit', icon: TrendingUp },
+  { key: 'dca', label: 'DCA', icon: Repeat },
 ]
+
+function formatDcaTime(iso) {
+  const d = new Date(iso)
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function shortSig(sig) {
+  if (!sig || sig === 'signed' || sig === 'simulated') return sig || '—'
+  return `${sig.slice(0, 6)}…${sig.slice(-4)}`
+}
+
+function DcaProgress({ strategy, onStop, compact = false }) {
+  const completed = strategy.executions.length
+  const total = strategy.totalPurchases
+  const spent = strategy.executions.reduce((s, e) => s + e.amount, 0)
+  const pct = total > 0 ? Math.min(100, (completed / total) * 100) : 0
+  const isActive = strategy.status === 'active'
+  const nextRun = strategy.nextRunAt ? new Date(strategy.nextRunAt) : null
+  const now = Date.now()
+  const nextLabel = nextRun
+    ? (nextRun.getTime() <= now ? 'firing now…' : `in ${Math.max(1, Math.round((nextRun.getTime() - now) / 60000))} min`)
+    : null
+
+  return (
+    <div className="bg-terminal-card border border-terminal-border rounded-lg p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Repeat size={12} className={isActive ? 'text-terminal-accent' : 'text-terminal-muted'} />
+          <span className="text-xs font-semibold text-terminal-text uppercase tracking-wider">
+            {isActive ? 'DCA Active' : strategy.status === 'completed' ? 'DCA Completed' : 'DCA Cancelled'}
+          </span>
+          <span className={`text-[10px] font-bold uppercase ${strategy.side === 'yes' ? 'text-terminal-green' : 'text-terminal-red'}`}>
+            {strategy.side}
+          </span>
+        </div>
+        {isActive && onStop && (
+          <button
+            onClick={onStop}
+            className="flex items-center gap-1 text-[10px] text-terminal-red/80 hover:text-terminal-red transition-colors"
+          >
+            <StopCircle size={12} />
+            Stop DCA
+          </button>
+        )}
+      </div>
+
+      <div className="text-xs text-terminal-text font-mono">
+        {completed} of {total} purchases completed (${spent.toFixed(2)} / ${strategy.totalBudget.toFixed(2)})
+      </div>
+
+      <div className="h-1.5 bg-terminal-surface rounded-full overflow-hidden">
+        <div
+          className={`h-full ${strategy.status === 'cancelled' ? 'bg-terminal-muted' : 'bg-terminal-accent'}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <div className="flex items-center justify-between text-[10px] text-terminal-muted font-mono">
+        <span>
+          ${strategy.amountPerBuy.toFixed(2)} · every {DCA_FREQUENCIES.find(f => f.key === strategy.frequency)?.label}
+        </span>
+        {isActive && nextLabel && <span>Next: {nextLabel}</span>}
+      </div>
+
+      {!compact && strategy.executions.length > 0 && (
+        <div className="pt-2 border-t border-terminal-border/50">
+          <p className="text-[10px] text-terminal-muted uppercase tracking-wider mb-1">History</p>
+          <div className="max-h-32 overflow-y-auto space-y-1">
+            {strategy.executions.slice().reverse().map(e => (
+              <div key={e.id} className="flex items-center justify-between text-[10px] font-mono text-terminal-muted gap-2">
+                <span>{formatDcaTime(e.timestamp)}</span>
+                <span className="text-terminal-text">${e.amount.toFixed(2)}</span>
+                <span>@{(e.price * 100).toFixed(1)}¢</span>
+                <span className={e.txSigned ? 'text-terminal-green' : 'text-terminal-yellow'} title={e.txSignature}>
+                  {e.txSigned ? shortSig(e.txSignature) : 'sim'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function hasPosition(marketId) {
   try {
@@ -35,6 +121,7 @@ function hasPosition(marketId) {
 export default function TradePanel({ market }) {
   const { connected, connect, address } = useWallet()
   const { addOrder } = useConditionalOrders()
+  const { strategiesForMarket, startStrategy, stopStrategy } = useDCA()
   const [side, setSide] = useState(market?.side || 'yes')
   const [orderType, setOrderType] = useState('market')
   const [amount, setAmount] = useState('')
@@ -43,6 +130,12 @@ export default function TradePanel({ market }) {
   const [previewing, setPreviewing] = useState(false)
   const [quote, setQuote] = useState(null)
   const [result, setResult] = useState(null)
+  const [dcaPerBuy, setDcaPerBuy] = useState('')
+  const [dcaFrequency, setDcaFrequency] = useState('4h')
+  const [dcaBudget, setDcaBudget] = useState('')
+
+  const dcaStrategies = strategiesForMarket(market.id)
+  const activeDca = dcaStrategies.find(s => s.status === 'active')
 
   const hasPos = useMemo(() => hasPosition(market.id), [market.id])
   const price = side === 'yes' ? market.yesAsk : market.noAsk
@@ -196,7 +289,42 @@ export default function TradePanel({ market }) {
     setTriggerPrice('')
   }, [connected, connect, amount, triggerPrice, effectiveOrderType, side, price, market, addOrder])
 
-  const handleSubmit = effectiveOrderType === 'market' ? handleMarketTrade : handleConditionalOrder
+  const dcaPerBuyNum = parseFloat(dcaPerBuy) || 0
+  const dcaBudgetNum = parseFloat(dcaBudget) || 0
+  const dcaPurchases = dcaPerBuyNum > 0 ? Math.floor(dcaBudgetNum / dcaPerBuyNum) : 0
+  const dcaFreqLabel = DCA_FREQUENCIES.find(f => f.key === dcaFrequency)?.label || dcaFrequency
+
+  const handleStartDca = useCallback(() => {
+    if (!connected) { connect(); return }
+    if (dcaPerBuyNum <= 0 || dcaBudgetNum <= 0 || dcaPurchases <= 0) {
+      setResult({ success: false, error: 'Enter valid amount and budget' })
+      return
+    }
+    const strategy = startStrategy({
+      marketId: market.id,
+      marketTicker: market.ticker,
+      eventTicker: market.eventTicker,
+      yesMint: market.yesMint,
+      noMint: market.noMint,
+      question: market.question,
+      eventTitle: market.eventTitle,
+      category: market.category,
+      side,
+      amountPerBuy: dcaPerBuyNum,
+      frequency: dcaFrequency,
+      totalBudget: dcaBudgetNum,
+      referencePrice: price,
+    })
+    setResult({ success: true, dca: true, strategy })
+    setDcaPerBuy('')
+    setDcaBudget('')
+  }, [connected, connect, dcaPerBuyNum, dcaBudgetNum, dcaPurchases, startStrategy, market, side, dcaFrequency, price])
+
+  const handleSubmit = effectiveOrderType === 'market'
+    ? handleMarketTrade
+    : effectiveOrderType === 'dca'
+      ? handleStartDca
+      : handleConditionalOrder
 
   return (
     <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
@@ -255,7 +383,7 @@ export default function TradePanel({ market }) {
         </div>
 
         {/* Trigger price — for conditional orders */}
-        {effectiveOrderType !== 'market' && (
+        {effectiveOrderType !== 'market' && effectiveOrderType !== 'dca' && (
           <div>
             <label className="text-xs text-terminal-muted mb-1 flex items-center justify-between">
               <span>
@@ -305,6 +433,8 @@ export default function TradePanel({ market }) {
           </div>
         )}
 
+        {effectiveOrderType !== 'dca' && (
+        <>
         {/* Amount */}
         <div>
           <label className="text-xs text-terminal-muted mb-1 block">Amount (USDC)</label>
@@ -468,6 +598,96 @@ export default function TradePanel({ market }) {
             )}
           </button>
         </div>
+        </>
+        )}
+
+        {/* DCA form / progress */}
+        {effectiveOrderType === 'dca' && (
+          <div className="space-y-3">
+            {!activeDca && (
+              <>
+                <div>
+                  <label className="text-xs text-terminal-muted mb-1 block">Amount per Purchase (USDC)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-terminal-muted text-sm">$</span>
+                    <input
+                      type="number"
+                      value={dcaPerBuy}
+                      onChange={(e) => { setDcaPerBuy(e.target.value); setResult(null) }}
+                      placeholder="50.00"
+                      min="0"
+                      step="0.01"
+                      className="w-full pl-7 pr-4 py-2.5 bg-terminal-card border border-terminal-border rounded-lg text-sm font-mono text-terminal-text placeholder-terminal-muted focus:outline-none focus:border-terminal-accent focus:ring-1 focus:ring-terminal-accent/30"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-terminal-muted mb-1 block">Frequency</label>
+                  <select
+                    value={dcaFrequency}
+                    onChange={(e) => setDcaFrequency(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-terminal-card border border-terminal-border rounded-lg text-sm font-mono text-terminal-text focus:outline-none focus:border-terminal-accent focus:ring-1 focus:ring-terminal-accent/30"
+                  >
+                    {DCA_FREQUENCIES.map(f => (
+                      <option key={f.key} value={f.key}>Every {f.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-terminal-muted mb-1 block">Total Budget (USDC)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-terminal-muted text-sm">$</span>
+                    <input
+                      type="number"
+                      value={dcaBudget}
+                      onChange={(e) => { setDcaBudget(e.target.value); setResult(null) }}
+                      placeholder="500.00"
+                      min="0"
+                      step="0.01"
+                      className="w-full pl-7 pr-4 py-2.5 bg-terminal-card border border-terminal-border rounded-lg text-sm font-mono text-terminal-text placeholder-terminal-muted focus:outline-none focus:border-terminal-accent focus:ring-1 focus:ring-terminal-accent/30"
+                    />
+                  </div>
+                </div>
+
+                {dcaPerBuyNum > 0 && dcaBudgetNum > 0 && (
+                  <div className="bg-terminal-card border border-terminal-border rounded-lg p-3 text-xs text-terminal-text leading-relaxed">
+                    Will buy <span className="font-mono font-semibold">${dcaPerBuyNum.toFixed(2)}</span>{' '}
+                    of <span className={`font-semibold ${side === 'yes' ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                      {side.toUpperCase()}
+                    </span>{' '}
+                    every {dcaFreqLabel}.<br />
+                    Total budget: <span className="font-mono font-semibold">${dcaBudgetNum.toFixed(2)}</span>.
+                    Approximately <span className="font-mono font-semibold">{dcaPurchases}</span> purchases.
+                  </div>
+                )}
+
+                <button
+                  onClick={handleStartDca}
+                  disabled={!dcaPerBuyNum || !dcaBudgetNum || dcaPurchases < 1}
+                  className="w-full py-3 rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 bg-terminal-accent hover:bg-blue-500 text-white shadow-lg shadow-terminal-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Repeat size={14} />
+                  {connected ? 'Start DCA' : 'Connect Wallet to Start DCA'}
+                </button>
+              </>
+            )}
+
+            {activeDca && (
+              <DcaProgress strategy={activeDca} onStop={() => stopStrategy(activeDca.id)} />
+            )}
+
+            {dcaStrategies.filter(s => s.status !== 'active').length > 0 && !activeDca && (
+              <div className="space-y-2">
+                <p className="text-[10px] text-terminal-muted uppercase tracking-wider">Past strategies</p>
+                {dcaStrategies.filter(s => s.status !== 'active').slice(-3).map(s => (
+                  <DcaProgress key={s.id} strategy={s} compact />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Result */}
         {result && (
@@ -480,18 +700,26 @@ export default function TradePanel({ market }) {
             <div>
               <p className="font-medium">
                 {result.success
-                  ? result.conditional
-                    ? 'Conditional Order Placed!'
-                    : 'Order Filled!'
+                  ? result.dca
+                    ? 'DCA Strategy Started!'
+                    : result.conditional
+                      ? 'Conditional Order Placed!'
+                      : 'Order Filled!'
                   : 'Order Failed'
                 }
               </p>
+              {result.success && result.dca && (
+                <p className="text-terminal-muted mt-0.5">
+                  Buying ${result.strategy.amountPerBuy.toFixed(2)} of {result.strategy.side.toUpperCase()} every{' '}
+                  {DCA_FREQUENCIES.find(f => f.key === result.strategy.frequency)?.label}.
+                </p>
+              )}
               {result.success && result.conditional && (
                 <p className="text-terminal-muted mt-0.5">
                   {result.order.orderType} order set at {(result.order.triggerPrice * 100).toFixed(1)}¢ for ${result.order.amount.toFixed(2)}
                 </p>
               )}
-              {result.success && !result.conditional && (
+              {result.success && !result.conditional && !result.dca && result.order && (
                 <p className="text-terminal-muted mt-0.5">
                   {result.order.shares} shares @ {(result.order.price * 100).toFixed(1)}¢ = ${result.order.amount.toFixed(2)}
                   {result.order.txSigned && ' (tx signed)'}

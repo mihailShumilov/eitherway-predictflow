@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { MarketsProvider } from './hooks/useMarkets'
 import { WalletProvider } from './hooks/useWallet'
 import { OrdersProvider, useConditionalOrders } from './hooks/useConditionalOrders'
+import { DCAProvider } from './hooks/useDCA'
 import Header from './components/Header'
 import CategorySidebar from './components/CategorySidebar'
 import MarketGrid from './components/MarketGrid'
@@ -88,7 +89,9 @@ export default function App() {
     <WalletProvider>
       <MarketsProvider>
         <OrdersProvider>
-          <AppLayout />
+          <DCAProvider>
+            <AppLayout />
+          </DCAProvider>
         </OrdersProvider>
       </MarketsProvider>
     </WalletProvider>
