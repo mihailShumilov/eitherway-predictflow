@@ -11,7 +11,12 @@ export default defineConfig({
     cors: true,
     allowedHosts: true,
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api/dflow': {
+        target: 'https://dev-prediction-markets-api.dflow.net',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/dflow/, ''),
+      },
     },
   },
 })

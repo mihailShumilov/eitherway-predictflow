@@ -1,17 +1,59 @@
-import React, { useMemo, useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react'
 import { generateRecentTrades } from '../data/mockDetailData'
+
+const DFLOW_BASE = '/api/dflow'
 
 function formatTradeTime(iso) {
   const d = new Date(iso)
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function normalizeTrade(t, i) {
+  const timeRaw = t.time ?? t.timestamp ?? t.t ?? t.createdAt
+  const timeIso = typeof timeRaw === 'number'
+    ? new Date(timeRaw < 1e12 ? timeRaw * 1000 : timeRaw).toISOString()
+    : (timeRaw ? new Date(timeRaw).toISOString() : new Date().toISOString())
+  const price = parseFloat(t.price ?? t.p ?? 0)
+  const amount = parseFloat(t.amount ?? t.size ?? t.qty ?? 0)
+  const sideRaw = (t.side ?? t.direction ?? '').toString().toLowerCase()
+  const side = sideRaw === 'sell' || sideRaw === 'ask' ? 'sell' : 'buy'
+  return {
+    id: t.id || `trade-${timeIso}-${i}`,
+    time: timeIso,
+    side,
+    price: Math.round(price * 1000) / 1000,
+    amount: Math.floor(amount),
+    total: Math.round(price * amount * 100) / 100,
+  }
+}
+
 export default function RecentTrades({ market }) {
-  const [trades, setTrades] = useState(() => generateRecentTrades(market.yesAsk, 20))
+  const [trades, setTrades] = useState([])
   const [newTradeIdx, setNewTradeIdx] = useState(-1)
 
-  // Simulate incoming trades
+  // Initial load from DFlow /trades; fall back to simulated seed on failure
+  useEffect(() => {
+    let cancelled = false
+    const ticker = market.ticker || market.id
+    async function load() {
+      try {
+        const res = await fetch(`${DFLOW_BASE}/api/v1/trades?market_ticker=${encodeURIComponent(ticker)}&limit=20`)
+        if (!res.ok) throw new Error(`Trades API: ${res.status}`)
+        const data = await res.json()
+        const raw = Array.isArray(data) ? data : (data.data || data.trades || [])
+        if (!raw.length) throw new Error('Empty trades')
+        const mapped = raw.map(normalizeTrade).slice(0, 20)
+        if (!cancelled) setTrades(mapped)
+      } catch {
+        if (!cancelled) setTrades(generateRecentTrades(market.yesAsk, 20))
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [market.id, market.ticker, market.yesAsk])
+
+  // Simulate incoming trades on top of whatever seed we loaded
   useEffect(() => {
     const interval = setInterval(() => {
       setTrades(prev => {

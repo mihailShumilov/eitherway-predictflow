@@ -1,5 +1,7 @@
-import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react'
+import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { generateCandlesticks } from '../data/mockDetailData'
+
+const DFLOW_BASE = '/api/dflow'
 
 const RESOLUTIONS = [
   { key: '1h', label: '1H', count: 48 },
@@ -7,6 +9,19 @@ const RESOLUTIONS = [
   { key: '1d', label: '1D', count: 30 },
   { key: '1w', label: '1W', count: 20 },
 ]
+
+function normalizeCandle(c) {
+  const time = c.time ?? c.timestamp ?? c.t ?? c.openTime
+  const parsedTime = typeof time === 'number' ? (time < 1e12 ? time * 1000 : time) : new Date(time).getTime()
+  return {
+    time: parsedTime,
+    open: parseFloat(c.open ?? c.o),
+    high: parseFloat(c.high ?? c.h),
+    low: parseFloat(c.low ?? c.l),
+    close: parseFloat(c.close ?? c.c),
+    volume: parseFloat(c.volume ?? c.v ?? 0),
+  }
+}
 
 const GREEN = '#10b981'
 const RED = '#ef4444'
@@ -30,10 +45,37 @@ export default function CandlestickChart({ market, orderLines = [] }) {
   const [dimensions, setDimensions] = useState({ width: 600, height: 300 })
 
   const resConfig = RESOLUTIONS.find(r => r.key === resolution)
-  const candles = useMemo(
-    () => generateCandlesticks(market.yesAsk, resolution, resConfig.count),
-    [market.id, resolution, resConfig.count]
-  )
+  const [candles, setCandles] = useState([])
+  const [isMock, setIsMock] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const ticker = market.ticker || market.id
+    async function load() {
+      try {
+        const res = await fetch(`${DFLOW_BASE}/api/v1/market/${encodeURIComponent(ticker)}/candlesticks?resolution=${resolution}`)
+        if (!res.ok) throw new Error(`Candlesticks API: ${res.status}`)
+        const data = await res.json()
+        const raw = Array.isArray(data) ? data : (data.data || data.candles || data.candlesticks || [])
+        if (!raw.length) throw new Error('Empty candle response')
+        const mapped = raw
+          .map(normalizeCandle)
+          .filter(c => Number.isFinite(c.open) && Number.isFinite(c.close))
+        if (!mapped.length) throw new Error('No valid candles')
+        if (!cancelled) {
+          setCandles(mapped)
+          setIsMock(false)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCandles(generateCandlesticks(market.yesAsk, resolution, resConfig.count))
+          setIsMock(true)
+        }
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [market.id, market.ticker, market.yesAsk, resolution, resConfig.count])
 
   const padding = { top: 20, right: 60, bottom: 30, left: 10 }
 

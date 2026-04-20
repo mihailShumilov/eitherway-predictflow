@@ -1,6 +1,21 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import { generateDepthData } from '../data/mockDetailData'
+
+const DFLOW_BASE = '/api/dflow'
+
+function normalizeLevel(level) {
+  const price = parseFloat(level.price ?? level.p ?? level[0])
+  const size = parseFloat(level.size ?? level.qty ?? level.quantity ?? level.amount ?? level[1])
+  return Number.isFinite(price) && Number.isFinite(size) ? { price, size } : null
+}
+
+function withCumulative(levels, { reverse = false } = {}) {
+  const sorted = [...levels].sort((a, b) => reverse ? b.price - a.price : a.price - b.price)
+  let cum = 0
+  const out = sorted.map(l => ({ price: l.price, size: l.size, cumulative: (cum += l.size) }))
+  return reverse ? out.reverse() : out
+}
 
 const CustomTooltip = ({ active, payload }) => {
   if (!active || !payload?.length) return null
@@ -16,8 +31,35 @@ const CustomTooltip = ({ active, payload }) => {
 }
 
 export default function DepthChart({ market }) {
+  const [book, setBook] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const ticker = market.ticker || market.id
+    async function load() {
+      try {
+        const res = await fetch(`${DFLOW_BASE}/api/v1/orderbook/${encodeURIComponent(ticker)}`)
+        if (!res.ok) throw new Error(`Orderbook API: ${res.status}`)
+        const data = await res.json()
+        const rawBids = (data.bids || data.buy || data.data?.bids || []).map(normalizeLevel).filter(Boolean)
+        const rawAsks = (data.asks || data.sell || data.data?.asks || []).map(normalizeLevel).filter(Boolean)
+        if (!rawBids.length && !rawAsks.length) throw new Error('Empty orderbook')
+        if (!cancelled) {
+          setBook({
+            bids: withCumulative(rawBids, { reverse: true }),
+            asks: withCumulative(rawAsks),
+          })
+        }
+      } catch {
+        if (!cancelled) setBook(null)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [market.id, market.ticker])
+
   const data = useMemo(() => {
-    const { bids, asks } = generateDepthData(market.yesBid, market.yesAsk, 20)
+    const { bids, asks } = book || generateDepthData(market.yesBid, market.yesAsk, 20)
 
     const merged = []
 
@@ -45,7 +87,7 @@ export default function DepthChart({ market }) {
 
     merged.sort((a, b) => a.price - b.price)
     return merged
-  }, [market.id, market.yesBid, market.yesAsk])
+  }, [book, market.id, market.yesBid, market.yesAsk])
 
   const midPrice = (market.yesBid + market.yesAsk) / 2
 

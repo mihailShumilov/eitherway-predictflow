@@ -11,9 +11,9 @@ const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
 function getTokenMint(market, side) {
-  return side === 'yes'
-    ? `YES-${market.id}-mint`
-    : `NO-${market.id}-mint`
+  if (side === 'yes' && market.yesMint) return market.yesMint
+  if (side === 'no' && market.noMint) return market.noMint
+  return side === 'yes' ? `YES-${market.id}-mint` : `NO-${market.id}-mint`
 }
 
 const ORDER_TABS = [
@@ -178,6 +178,10 @@ export default function TradePanel({ market }) {
     const newOrder = addOrder({
       orderType: effectiveOrderType,
       marketId: market.id,
+      marketTicker: market.ticker,
+      eventTicker: market.eventTicker,
+      yesMint: market.yesMint,
+      noMint: market.noMint,
       question: market.question,
       eventTitle: market.eventTitle,
       category: market.category,

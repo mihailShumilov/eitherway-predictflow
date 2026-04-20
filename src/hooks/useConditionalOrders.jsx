@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
+import { useWallet } from './useWallet'
 
 const OrdersContext = createContext(null)
 
 const STORAGE_KEY = 'predictflow_conditional_orders'
 const POLL_INTERVAL = 5000
+const DFLOW_BASE = '/api/dflow'
+const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
 function loadOrders() {
   try {
@@ -25,21 +29,62 @@ function generateId() {
   return `cond-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-// Simulated live price fetcher. In production this would hit
-// GET /api/v1/live_data/by-event/{event_ticker} via DFlow.
-async function fetchLivePrice(marketId, currentYesAsk) {
-  // Simulate minor price fluctuation around the market's current price
+// DFlow live_data payload shape isn't formally documented — probe a few common layouts.
+function parseLivePrice(payload, marketId) {
+  if (!payload) return null
+  const candidates = [payload]
+  if (Array.isArray(payload)) candidates.push(...payload)
+  if (Array.isArray(payload.markets)) candidates.push(...payload.markets)
+  if (Array.isArray(payload.data)) candidates.push(...payload.data)
+
+  const pickYes = (c) => {
+    const yes = parseFloat(c.yesAsk ?? c.yes_ask ?? c.yesPrice ?? c.yes_price ?? c.yes)
+    return Number.isFinite(yes) ? yes : null
+  }
+
+  if (marketId) {
+    for (const c of candidates) {
+      if (!c || typeof c !== 'object') continue
+      const id = c.id ?? c.marketId ?? c.market_id ?? c.ticker ?? c.marketTicker
+      if (id === marketId) {
+        const yes = pickYes(c)
+        if (yes !== null) return { yes, no: 1 - yes }
+      }
+    }
+  }
+  for (const c of candidates) {
+    if (!c || typeof c !== 'object') continue
+    const yes = pickYes(c)
+    if (yes !== null) return { yes, no: 1 - yes }
+  }
+  return null
+}
+
+async function fetchLivePrice(order) {
+  if (order.eventTicker) {
+    try {
+      const res = await fetch(`${DFLOW_BASE}/api/v1/live_data/by-event/${encodeURIComponent(order.eventTicker)}`)
+      if (res.ok) {
+        const data = await res.json()
+        const parsed = parseLivePrice(data, order.marketId)
+        if (parsed) return { ...parsed, source: 'dflow' }
+      }
+    } catch {
+      // fall through to simulated drift
+    }
+  }
+  const base = order.currentPrice ?? 0.5
   const drift = (Math.random() - 0.5) * 0.04
-  const price = Math.min(0.99, Math.max(0.01, currentYesAsk + drift))
-  return { yes: price, no: 1 - price }
+  const price = Math.min(0.99, Math.max(0.01, base + drift))
+  return { yes: price, no: 1 - price, source: 'simulated' }
 }
 
 export function OrdersProvider({ children }) {
   const [orders, setOrders] = useState(loadOrders)
   const [notifications, setNotifications] = useState([])
   const priceCache = useRef({})
+  const { activeWallet, address } = useWallet()
 
-  // Persist whenever orders change
   useEffect(() => {
     saveOrders(orders)
   }, [orders])
@@ -83,19 +128,42 @@ export function OrdersProvider({ children }) {
     setNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
 
-  // Execute an order (simulate DFlow /order call)
+  // Attempt real DFlow /order + wallet sign. Returns true on successful signature.
+  const submitToDflow = useCallback(async (order) => {
+    if (!address) return false
+    const outputMint = order.side === 'yes' ? order.yesMint : order.noMint
+    if (!outputMint) return false
+    try {
+      const amountLamports = Math.floor(order.amount * 1e6)
+      const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${encodeURIComponent(outputMint)}&amount=${amountLamports}&userPublicKey=${address}`
+      const res = await fetch(url)
+      if (!res.ok) return false
+      const data = await res.json()
+      const provider = activeWallet?.getProvider?.()
+      if (!provider || !data.transaction) return false
+      const tx = typeof data.transaction === 'string'
+        ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
+        : data.transaction
+      await provider.signTransaction(tx)
+      return true
+    } catch {
+      return false
+    }
+  }, [activeWallet, address])
+
   const executeOrder = useCallback(async (order, livePrice) => {
     setOrders(prev => prev.map(o =>
       o.id === order.id ? { ...o, status: 'executing' } : o
     ))
 
-    // Simulate signing and execution delay
-    await new Promise(r => setTimeout(r, 1200))
+    const txSigned = await submitToDflow(order)
+    if (!txSigned) {
+      await new Promise(r => setTimeout(r, 1200))
+    }
 
     const fillPrice = order.side === 'yes' ? livePrice.yes : livePrice.no
     const shares = order.amount / fillPrice
 
-    // Save to positions
     const positions = JSON.parse(localStorage.getItem('predictflow_positions') || '[]')
     positions.push({
       id: `ord-${Date.now()}`,
@@ -107,7 +175,7 @@ export function OrdersProvider({ children }) {
       shares: parseFloat(shares.toFixed(2)),
       timestamp: new Date().toISOString(),
       status: 'filled',
-      txSigned: false,
+      txSigned,
       question: order.question,
       eventTitle: order.eventTitle,
       category: order.category,
@@ -115,21 +183,20 @@ export function OrdersProvider({ children }) {
     localStorage.setItem('predictflow_positions', JSON.stringify(positions))
 
     setOrders(prev => prev.map(o =>
-      o.id === order.id ? { ...o, status: 'filled', filledAt: new Date().toISOString(), fillPrice } : o
+      o.id === order.id ? { ...o, status: 'filled', filledAt: new Date().toISOString(), fillPrice, txSigned } : o
     ))
 
     const typeLabel = order.orderType === 'limit' ? 'Limit order' :
       order.orderType === 'stop-loss' ? 'Stop-loss' : 'Take-profit'
-    addNotification(`${typeLabel} triggered! ${order.side.toUpperCase()} ${shares.toFixed(2)} shares @ ${(fillPrice * 100).toFixed(1)}¢`)
-  }, [addNotification])
+    const suffix = txSigned ? '' : ' (simulated)'
+    addNotification(`${typeLabel} triggered${suffix}! ${order.side.toUpperCase()} ${shares.toFixed(2)} shares @ ${(fillPrice * 100).toFixed(1)}¢`)
+  }, [addNotification, submitToDflow])
 
-  // Price monitor — polls every 5 seconds for pending orders
   useEffect(() => {
     const interval = setInterval(async () => {
       const pending = orders.filter(o => o.status === 'pending')
       if (pending.length === 0) return
 
-      // Group by market to avoid duplicate fetches
       const byMarket = {}
       for (const o of pending) {
         if (!byMarket[o.marketId]) byMarket[o.marketId] = []
@@ -137,8 +204,7 @@ export function OrdersProvider({ children }) {
       }
 
       for (const [marketId, marketOrders] of Object.entries(byMarket)) {
-        const basePrice = marketOrders[0].currentPrice || 0.5
-        const livePrice = await fetchLivePrice(marketId, basePrice)
+        const livePrice = await fetchLivePrice(marketOrders[0])
         priceCache.current[marketId] = livePrice
 
         for (const order of marketOrders) {
@@ -146,13 +212,10 @@ export function OrdersProvider({ children }) {
           let shouldExecute = false
 
           if (order.orderType === 'limit') {
-            // Limit buy: execute when price drops to or below target
             shouldExecute = currentSidePrice <= order.triggerPrice
           } else if (order.orderType === 'stop-loss') {
-            // Stop-loss: execute when price drops to or below trigger
             shouldExecute = currentSidePrice <= order.triggerPrice
           } else if (order.orderType === 'take-profit') {
-            // Take-profit: execute when price rises to or above target
             shouldExecute = currentSidePrice >= order.triggerPrice
           }
 

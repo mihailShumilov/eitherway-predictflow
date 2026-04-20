@@ -1,6 +1,6 @@
 import React from 'react'
 import { Clock, TrendingUp, DollarSign, Zap } from 'lucide-react'
-import { formatDistanceToNow } from 'date-fns'
+import { format } from 'date-fns'
 
 function formatUsd(num) {
   if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`
@@ -20,7 +20,7 @@ function getUrgencyColor(closeTime) {
 }
 
 export default function MarketCard({ market, onSelect }) {
-  const timeLeft = formatDistanceToNow(new Date(market.closeTime), { addSuffix: true })
+  const closeLabel = format(new Date(market.closeTime), 'MMM d, HH:mm')
   const urgencyColor = getUrgencyColor(market.closeTime)
   const yesPercent = (market.yesAsk * 100).toFixed(0)
   const noPercent = (market.noAsk * 100).toFixed(0)
@@ -88,9 +88,9 @@ export default function MarketCard({ market, onSelect }) {
             {formatUsd(market.liquidity)}
           </span>
         </div>
-        <span className={`flex items-center gap-1 ${urgencyColor}`}>
+        <span className={`flex items-center gap-1 font-mono ${urgencyColor}`}>
           <Clock size={12} />
-          {timeLeft}
+          {closeLabel}
         </span>
       </div>
     </div>

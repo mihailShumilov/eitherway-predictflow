@@ -356,8 +356,12 @@ export function flattenMarkets(events) {
     for (const market of (event.markets || [])) {
       markets.push({
         ...market,
+        ticker: market.ticker || market.id,
+        yesMint: market.yesMint ?? null,
+        noMint: market.noMint ?? null,
         eventTitle: event.title,
         eventId: event.id,
+        eventTicker: event.ticker || event.id,
         category: event.category,
         subcategory: event.subcategory,
         closeTime: event.closeTime,
