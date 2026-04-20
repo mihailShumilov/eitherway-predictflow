@@ -1,10 +1,15 @@
 import React from 'react'
-import { Activity, RefreshCw, Wifi, WifiOff } from 'lucide-react'
+import { Activity, RefreshCw, Wifi, WifiOff, LayoutGrid, Wallet } from 'lucide-react'
 import WalletButton from './WalletButton'
 import SearchBar from './SearchBar'
 import { useMarkets } from '../hooks/useMarkets'
 
-export default function Header() {
+const NAV_ITEMS = [
+  { id: 'explore', label: 'Explore', icon: LayoutGrid },
+  { id: 'portfolio', label: 'Portfolio', icon: Wallet },
+]
+
+export default function Header({ page, onPageChange }) {
   const { usingMockData, allMarkets, refresh, loading } = useMarkets()
 
   return (
@@ -27,6 +32,29 @@ export default function Header() {
 
           <div className="hidden md:block h-8 w-px bg-terminal-border" />
 
+          <nav className="hidden md:flex items-center gap-1">
+            {NAV_ITEMS.map(item => {
+              const Icon = item.icon
+              const active = page === item.id
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => onPageChange?.(item.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                    active
+                      ? 'bg-terminal-highlight text-white'
+                      : 'text-terminal-muted hover:text-terminal-text hover:bg-terminal-card'
+                  }`}
+                >
+                  <Icon size={12} />
+                  {item.label}
+                </button>
+              )
+            })}
+          </nav>
+
+          <div className="hidden md:block h-8 w-px bg-terminal-border" />
+
           <div className="hidden md:flex items-center gap-3 text-xs">
             <div className="flex items-center gap-1.5">
               {usingMockData ? (
@@ -45,25 +73,50 @@ export default function Header() {
         </div>
 
         <div className="flex-1 max-w-xl mx-4 hidden lg:block">
-          <SearchBar />
+          {page !== 'portfolio' && <SearchBar />}
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="p-2 rounded-lg text-terminal-muted hover:text-terminal-text hover:bg-terminal-highlight transition-all disabled:opacity-50"
-            title="Refresh markets"
-          >
-            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          </button>
+          {page !== 'portfolio' && (
+            <button
+              onClick={refresh}
+              disabled={loading}
+              className="p-2 rounded-lg text-terminal-muted hover:text-terminal-text hover:bg-terminal-highlight transition-all disabled:opacity-50"
+              title="Refresh markets"
+            >
+              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            </button>
+          )}
           <WalletButton />
         </div>
       </div>
 
-      <div className="lg:hidden px-4 pb-3">
-        <SearchBar />
-      </div>
+      <nav className="md:hidden flex items-center gap-1 px-4 pb-2">
+        {NAV_ITEMS.map(item => {
+          const Icon = item.icon
+          const active = page === item.id
+          return (
+            <button
+              key={item.id}
+              onClick={() => onPageChange?.(item.id)}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${
+                active
+                  ? 'bg-terminal-highlight text-white'
+                  : 'text-terminal-muted hover:text-terminal-text hover:bg-terminal-card'
+              }`}
+            >
+              <Icon size={12} />
+              {item.label}
+            </button>
+          )
+        })}
+      </nav>
+
+      {page !== 'portfolio' && (
+        <div className="lg:hidden px-4 pb-3">
+          <SearchBar />
+        </div>
+      )}
     </header>
   )
 }

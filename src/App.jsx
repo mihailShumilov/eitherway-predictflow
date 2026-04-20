@@ -7,6 +7,7 @@ import CategorySidebar from './components/CategorySidebar'
 import MarketGrid from './components/MarketGrid'
 import MarketDetail from './components/MarketDetail'
 import Positions from './components/Positions'
+import Portfolio from './components/Portfolio'
 import BottomBar from './components/BottomBar'
 import { X, Bell, AlertTriangle } from 'lucide-react'
 
@@ -50,17 +51,26 @@ function OrderNotifications() {
 
 function AppLayout() {
   const [selectedMarket, setSelectedMarket] = useState(null)
+  const [page, setPage] = useState('explore')
 
   return (
     <div className="min-h-screen bg-terminal-bg text-terminal-text flex flex-col">
       <OrderNotifications />
-      <Header />
+      <Header page={page} onPageChange={setPage} />
       <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4 max-w-screen-2xl mx-auto w-full">
-        <CategorySidebar />
-        <main className="flex-1 min-w-0 space-y-6">
-          <MarketGrid onSelectMarket={setSelectedMarket} />
-          <Positions />
-        </main>
+        {page === 'explore' ? (
+          <>
+            <CategorySidebar />
+            <main className="flex-1 min-w-0 space-y-6">
+              <MarketGrid onSelectMarket={setSelectedMarket} />
+              <Positions />
+            </main>
+          </>
+        ) : (
+          <main className="flex-1 min-w-0">
+            <Portfolio />
+          </main>
+        )}
       </div>
       <BottomBar />
       {selectedMarket && (
