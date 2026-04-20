@@ -110,6 +110,7 @@ export function MarketsProvider({ children }) {
       setMarkets(flattenMarkets(mockEvents))
       setCategories(mockCategories)
       setUsingMockData(true)
+      setError(err.message || 'Unable to reach DFlow')
       setCachedData({ events: mockEvents, categories: mockCategories, isMock: true })
     } finally {
       setLoading(false)

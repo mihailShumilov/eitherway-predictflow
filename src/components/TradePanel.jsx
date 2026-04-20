@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useMemo } from 'react'
 import {
   ArrowUpCircle, ArrowDownCircle, AlertCircle, Check, Loader2,
-  Eye, ShoppingCart, Target, TrendingDown, TrendingUp, Zap, Repeat, StopCircle
+  Eye, ShoppingCart, Target, TrendingDown, TrendingUp, Zap, Repeat, StopCircle,
+  Lock, Info, Wallet
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
+import { useUsdcBalance } from '../hooks/useUsdcBalance'
 
 const DFLOW_QUOTE_URL = 'https://dev-quote-api.dflow.net/quote'
 const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
@@ -122,6 +124,7 @@ export default function TradePanel({ market }) {
   const { connected, connect, address } = useWallet()
   const { addOrder } = useConditionalOrders()
   const { strategiesForMarket, startStrategy, stopStrategy } = useDCA()
+  const { balance: usdcBalance, loading: usdcLoading } = useUsdcBalance(address)
   const [side, setSide] = useState(market?.side || 'yes')
   const [orderType, setOrderType] = useState('market')
   const [amount, setAmount] = useState('')
@@ -137,8 +140,12 @@ export default function TradePanel({ market }) {
   const dcaStrategies = strategiesForMarket(market.id)
   const activeDca = dcaStrategies.find(s => s.status === 'active')
 
+  const isClosed = new Date(market.closeTime).getTime() <= Date.now()
   const hasPos = useMemo(() => hasPosition(market.id), [market.id])
   const price = side === 'yes' ? market.yesAsk : market.noAsk
+  const amountNum = parseFloat(amount) || 0
+  const insufficientUsdc = connected && usdcBalance != null && amountNum > 0 && amountNum > usdcBalance
+  const insufficientDcaBudget = connected && usdcBalance != null && (parseFloat(dcaBudget) || 0) > 0 && (parseFloat(dcaBudget) || 0) > usdcBalance
   const shares = amount ? (parseFloat(amount) / price).toFixed(2) : '0'
   const potentialPayout = amount ? (parseFloat(amount) / price).toFixed(2) : '0'
   const profit = amount ? ((parseFloat(amount) / price) - parseFloat(amount)).toFixed(2) : '0'
@@ -328,18 +335,51 @@ export default function TradePanel({ market }) {
 
   return (
     <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b border-terminal-border">
+      <div className="px-4 py-3 border-b border-terminal-border flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">
           Trade
         </h3>
+        {isClosed && (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-muted/10 border border-terminal-muted/40 text-terminal-muted">
+            <Lock size={10} />
+            Trading Closed
+          </span>
+        )}
+        {!isClosed && !connected && (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-yellow/10 border border-terminal-yellow/30 text-terminal-yellow">
+            <Wallet size={10} />
+            Wallet Required
+          </span>
+        )}
       </div>
 
       <div className="p-4 space-y-4">
+        {isClosed && (
+          <div className="flex items-start gap-2 bg-terminal-muted/10 border border-terminal-muted/30 rounded-lg p-3 text-xs text-terminal-muted">
+            <Lock size={14} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium text-terminal-text">Market closed</p>
+              <p className="mt-0.5">This market is past its close time. Trading is disabled pending settlement.</p>
+            </div>
+          </div>
+        )}
+
+        {connected && usdcBalance != null && (
+          <div className="flex items-center justify-between text-[11px] text-terminal-muted font-mono">
+            <span className="flex items-center gap-1" title="Your USDC balance on Solana">
+              <Wallet size={10} />
+              USDC Balance
+            </span>
+            <span className="text-terminal-text">${usdcBalance.toFixed(2)}</span>
+          </div>
+        )}
+
         {/* Side selector */}
         <div className="grid grid-cols-2 gap-2">
           <button
             onClick={() => { setSide('yes'); setQuote(null); setResult(null) }}
-            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm transition-all ${
+            disabled={isClosed}
+            className={`flex items-center justify-center gap-2 py-2.5 min-h-[44px] rounded-lg font-semibold text-sm transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 ${
               side === 'yes'
                 ? 'bg-terminal-green text-white shadow-lg shadow-terminal-green/20'
                 : 'bg-terminal-green/10 text-terminal-green border border-terminal-green/30 hover:bg-terminal-green/20'
@@ -350,7 +390,8 @@ export default function TradePanel({ market }) {
           </button>
           <button
             onClick={() => { setSide('no'); setQuote(null); setResult(null) }}
-            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm transition-all ${
+            disabled={isClosed}
+            className={`flex items-center justify-center gap-2 py-2.5 min-h-[44px] rounded-lg font-semibold text-sm transition-all active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 ${
               side === 'no'
                 ? 'bg-terminal-red text-white shadow-lg shadow-terminal-red/20'
                 : 'bg-terminal-red/10 text-terminal-red border border-terminal-red/30 hover:bg-terminal-red/20'
@@ -467,8 +508,9 @@ export default function TradePanel({ market }) {
         {amount && parseFloat(amount) > 0 && (
           <div className="bg-terminal-card border border-terminal-border rounded-lg p-3 space-y-2">
             <div className="flex justify-between text-xs">
-              <span className="text-terminal-muted">
+              <span className="text-terminal-muted flex items-center gap-1" title={effectiveOrderType === 'market' ? 'Market price your order will fill at' : 'Price that will trigger this conditional order'}>
                 {effectiveOrderType === 'market' ? 'Price' : 'Trigger Price'}
+                <Info size={10} className="text-terminal-muted/60" />
               </span>
               <span className="font-mono text-terminal-text">
                 {effectiveOrderType === 'market'
@@ -478,7 +520,10 @@ export default function TradePanel({ market }) {
               </span>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-terminal-muted">Est. Shares</span>
+              <span className="text-terminal-muted flex items-center gap-1" title="Shares you'll receive — each pays $1.00 if the market resolves in your favor">
+                Est. Shares
+                <Info size={10} className="text-terminal-muted/60" />
+              </span>
               <span className="font-mono text-terminal-text">
                 {effectiveOrderType !== 'market' && triggerPrice
                   ? (parseFloat(amount) / (parseFloat(triggerPrice) / 100)).toFixed(2)
@@ -487,7 +532,10 @@ export default function TradePanel({ market }) {
               </span>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-terminal-muted">Potential Payout</span>
+              <span className="text-terminal-muted flex items-center gap-1" title="Maximum USDC you'll receive if the market resolves in your favor">
+                Potential Payout
+                <Info size={10} className="text-terminal-muted/60" />
+              </span>
               <span className="font-mono text-terminal-green">${potentialPayout}</span>
             </div>
             {effectiveOrderType !== 'market' && (
@@ -527,14 +575,33 @@ export default function TradePanel({ market }) {
               <span className="font-mono text-terminal-text">{quote.outputAmount} shares</span>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-terminal-muted">Price Impact</span>
+              <span className="text-terminal-muted flex items-center gap-1" title="How much your trade moves the market price. Lower is better.">
+                Price Impact
+                <Info size={10} className="text-terminal-muted/60" />
+              </span>
               <span className={`font-mono ${parseFloat(quote.priceImpact) > 1 ? 'text-terminal-yellow' : 'text-terminal-green'}`}>
                 {quote.priceImpact}%
               </span>
             </div>
             <div className="flex justify-between text-xs">
-              <span className="text-terminal-muted">Fee</span>
+              <span className="text-terminal-muted flex items-center gap-1" title="Protocol fee for this trade">
+                Fee
+                <Info size={10} className="text-terminal-muted/60" />
+              </span>
               <span className="font-mono text-terminal-text">${quote.fee}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Insufficient balance warning */}
+        {insufficientUsdc && (
+          <div className="flex items-start gap-2 bg-terminal-yellow/10 border border-terminal-yellow/30 rounded-lg p-2.5 text-xs text-terminal-yellow">
+            <AlertCircle size={12} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">Insufficient USDC</p>
+              <p className="text-terminal-yellow/80 mt-0.5 font-mono">
+                You have ${usdcBalance?.toFixed(2)}, need ${amountNum.toFixed(2)}.
+              </p>
             </div>
           </div>
         )}
@@ -563,8 +630,8 @@ export default function TradePanel({ market }) {
 
           <button
             onClick={handleSubmit}
-            disabled={submitting || (!amount && connected)}
-            className={`w-full py-3 rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 ${
+            disabled={submitting || isClosed || (!amount && connected) || insufficientUsdc}
+            className={`w-full py-3 min-h-[44px] rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 active:scale-[0.99] ${
               effectiveOrderType === 'market'
                 ? side === 'yes'
                   ? 'bg-terminal-green hover:bg-emerald-500 text-white shadow-lg shadow-terminal-green/20'
@@ -574,19 +641,32 @@ export default function TradePanel({ market }) {
                   : effectiveOrderType === 'stop-loss'
                     ? 'bg-terminal-red hover:bg-red-500 text-white shadow-lg shadow-terminal-red/20'
                     : 'bg-terminal-green hover:bg-emerald-500 text-white shadow-lg shadow-terminal-green/20'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+            } disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100`}
           >
             {submitting ? (
               <>
                 <Loader2 size={16} className="animate-spin" />
                 {connected ? 'Signing & Submitting...' : 'Placing Order...'}
               </>
+            ) : isClosed ? (
+              <>
+                <Lock size={14} />
+                Trading Closed
+              </>
             ) : !connected ? (
-              'Connect Wallet to Trade'
+              <>
+                <Wallet size={14} />
+                Connect Wallet to Trade
+              </>
+            ) : insufficientUsdc ? (
+              <>
+                <AlertCircle size={14} />
+                Insufficient USDC
+              </>
             ) : effectiveOrderType === 'market' ? (
               <>
                 <ShoppingCart size={14} />
-                {`Buy ${side.toUpperCase()} — ${amount ? `${amount}` : 'Enter Amount'}`}
+                {`Buy ${side.toUpperCase()} — ${amount ? `$${amount}` : 'Enter Amount'}`}
               </>
             ) : (
               <>
@@ -663,13 +743,39 @@ export default function TradePanel({ market }) {
                   </div>
                 )}
 
+                {insufficientDcaBudget && (
+                  <div className="flex items-start gap-2 bg-terminal-yellow/10 border border-terminal-yellow/30 rounded-lg p-2.5 text-xs text-terminal-yellow">
+                    <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-medium">Budget exceeds balance</p>
+                      <p className="text-terminal-yellow/80 mt-0.5 font-mono">
+                        You have ${usdcBalance?.toFixed(2)}, DCA budget is ${dcaBudgetNum.toFixed(2)}.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleStartDca}
-                  disabled={!dcaPerBuyNum || !dcaBudgetNum || dcaPurchases < 1}
-                  className="w-full py-3 rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 bg-terminal-accent hover:bg-blue-500 text-white shadow-lg shadow-terminal-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={isClosed || !dcaPerBuyNum || !dcaBudgetNum || dcaPurchases < 1 || insufficientDcaBudget}
+                  className="w-full py-3 min-h-[44px] rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 bg-terminal-accent hover:bg-blue-500 text-white shadow-lg shadow-terminal-accent/20 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
                 >
-                  <Repeat size={14} />
-                  {connected ? 'Start DCA' : 'Connect Wallet to Start DCA'}
+                  {isClosed ? (
+                    <>
+                      <Lock size={14} />
+                      Trading Closed
+                    </>
+                  ) : insufficientDcaBudget ? (
+                    <>
+                      <AlertCircle size={14} />
+                      Insufficient USDC
+                    </>
+                  ) : (
+                    <>
+                      <Repeat size={14} />
+                      {connected ? 'Start DCA' : 'Connect Wallet to Start DCA'}
+                    </>
+                  )}
                 </button>
               </>
             )}

@@ -273,7 +273,8 @@ export default function CandlestickChart({ market, orderLines = [] }) {
                 <span className="text-terminal-muted">H <span className="text-terminal-green">{(currentCandle.high * 100).toFixed(1)}¢</span></span>
                 <span className="text-terminal-muted">L <span className="text-terminal-red">{(currentCandle.low * 100).toFixed(1)}¢</span></span>
                 <span className="text-terminal-muted">C <span className={priceChange >= 0 ? 'text-terminal-green' : 'text-terminal-red'}>{(currentCandle.close * 100).toFixed(1)}¢</span></span>
-                <span className={`${priceChange >= 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                <span className={`flex items-center gap-0.5 ${priceChange >= 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                  <span aria-hidden="true">{priceChange >= 0 ? '▲' : '▼'}</span>
                   {priceChange >= 0 ? '+' : ''}{pctChange}%
                 </span>
               </div>

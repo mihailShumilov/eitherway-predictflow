@@ -1,5 +1,5 @@
 import React from 'react'
-import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft } from 'lucide-react'
+import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock } from 'lucide-react'
 import { formatDistanceToNow, format } from 'date-fns'
 import CandlestickChart from './CandlestickChart'
 import DepthChart from './DepthChart'
@@ -23,6 +23,7 @@ export default function MarketDetail({ market, onClose }) {
   const timeLeft = formatDistanceToNow(new Date(market.closeTime), { addSuffix: true })
   const closeDate = format(new Date(market.closeTime), 'MMM d, yyyy HH:mm')
   const hoursLeft = (new Date(market.closeTime) - Date.now()) / 3600000
+  const isClosed = hoursLeft <= 0
   const urgencyColor = hoursLeft < 4 ? 'text-terminal-red' : hoursLeft < 24 ? 'text-terminal-yellow' : 'text-terminal-muted'
 
   return (
@@ -43,6 +44,12 @@ export default function MarketDetail({ market, onClose }) {
               <h2 className="text-lg font-semibold text-white leading-tight">{market.question}</h2>
               <p className="text-xs text-terminal-muted mt-1">{market.eventTitle}</p>
               <div className="flex items-center gap-4 mt-3 flex-wrap">
+                {isClosed && (
+                  <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-muted/10 border border-terminal-muted/40 text-terminal-muted">
+                    <Lock size={10} />
+                    Trading Closed
+                  </span>
+                )}
                 <span className={`flex items-center gap-1 text-xs ${urgencyColor}`}>
                   <Clock size={12} />
                   {timeLeft}

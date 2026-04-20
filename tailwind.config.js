@@ -26,6 +26,30 @@ export default {
         mono: ['"JetBrains Mono"', '"Fira Code"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
         sans: ['"Inter"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
+      keyframes: {
+        shimmer: {
+          '0%': { backgroundPosition: '-600px 0' },
+          '100%': { backgroundPosition: '600px 0' },
+        },
+        'flash-green': {
+          '0%': { backgroundColor: 'rgba(16, 185, 129, 0.35)' },
+          '100%': { backgroundColor: 'transparent' },
+        },
+        'flash-red': {
+          '0%': { backgroundColor: 'rgba(239, 68, 68, 0.35)' },
+          '100%': { backgroundColor: 'transparent' },
+        },
+        'slide-in': {
+          '0%': { transform: 'translateX(16px)', opacity: '0' },
+          '100%': { transform: 'translateX(0)', opacity: '1' },
+        },
+      },
+      animation: {
+        shimmer: 'shimmer 1.4s infinite linear',
+        'flash-green': 'flash-green 500ms ease-out',
+        'flash-red': 'flash-red 500ms ease-out',
+        'slide-in': 'slide-in 200ms ease-out',
+      },
     },
   },
   plugins: [],

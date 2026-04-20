@@ -3,6 +3,7 @@ import { MarketsProvider } from './hooks/useMarkets'
 import { WalletProvider } from './hooks/useWallet'
 import { OrdersProvider, useConditionalOrders } from './hooks/useConditionalOrders'
 import { DCAProvider } from './hooks/useDCA'
+import { LivePricesProvider } from './hooks/useLivePrices'
 import Header from './components/Header'
 import CategorySidebar from './components/CategorySidebar'
 import MarketGrid from './components/MarketGrid'
@@ -88,11 +89,13 @@ export default function App() {
   return (
     <WalletProvider>
       <MarketsProvider>
-        <OrdersProvider>
-          <DCAProvider>
-            <AppLayout />
-          </DCAProvider>
-        </OrdersProvider>
+        <LivePricesProvider>
+          <OrdersProvider>
+            <DCAProvider>
+              <AppLayout />
+            </DCAProvider>
+          </OrdersProvider>
+        </LivePricesProvider>
       </MarketsProvider>
     </WalletProvider>
   )
