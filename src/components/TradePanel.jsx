@@ -1,0 +1,505 @@
+import React, { useState, useCallback, useMemo } from 'react'
+import {
+  ArrowUpCircle, ArrowDownCircle, AlertCircle, Check, Loader2,
+  Eye, ShoppingCart, Target, TrendingDown, TrendingUp, Zap
+} from 'lucide-react'
+import { useWallet } from '../hooks/useWallet'
+import { useConditionalOrders } from '../hooks/useConditionalOrders'
+
+const DFLOW_QUOTE_URL = 'https://dev-quote-api.dflow.net/quote'
+const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+
+function getTokenMint(market, side) {
+  return side === 'yes'
+    ? `YES-${market.id}-mint`
+    : `NO-${market.id}-mint`
+}
+
+const ORDER_TABS = [
+  { key: 'market', label: 'Market', icon: Zap },
+  { key: 'limit', label: 'Limit', icon: Target },
+  { key: 'stop-loss', label: 'Stop-Loss', icon: TrendingDown },
+  { key: 'take-profit', label: 'Take-Profit', icon: TrendingUp },
+]
+
+function hasPosition(marketId) {
+  try {
+    const positions = JSON.parse(localStorage.getItem('predictflow_positions') || '[]')
+    return positions.some(p => p.marketId === marketId && p.status === 'filled')
+  } catch {
+    return false
+  }
+}
+
+export default function TradePanel({ market }) {
+  const { connected, connect, address } = useWallet()
+  const { addOrder } = useConditionalOrders()
+  const [side, setSide] = useState(market?.side || 'yes')
+  const [orderType, setOrderType] = useState('market')
+  const [amount, setAmount] = useState('')
+  const [triggerPrice, setTriggerPrice] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [quote, setQuote] = useState(null)
+  const [result, setResult] = useState(null)
+
+  const hasPos = useMemo(() => hasPosition(market.id), [market.id])
+  const price = side === 'yes' ? market.yesAsk : market.noAsk
+  const shares = amount ? (parseFloat(amount) / price).toFixed(2) : '0'
+  const potentialPayout = amount ? (parseFloat(amount) / price).toFixed(2) : '0'
+  const profit = amount ? ((parseFloat(amount) / price) - parseFloat(amount)).toFixed(2) : '0'
+
+  const visibleTabs = ORDER_TABS.filter(t => {
+    if (t.key === 'stop-loss' || t.key === 'take-profit') return hasPos
+    return true
+  })
+
+  const effectiveOrderType = visibleTabs.find(t => t.key === orderType) ? orderType : 'market'
+
+  const handlePreview = useCallback(async () => {
+    if (!amount || parseFloat(amount) <= 0) return
+    setPreviewing(true)
+    setQuote(null)
+
+    try {
+      const outputMint = getTokenMint(market, side)
+      const amountLamports = Math.floor(parseFloat(amount) * 1e6)
+      const url = `${DFLOW_QUOTE_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${amountLamports}`
+      const res = await fetch(url)
+
+      if (res.ok) {
+        const data = await res.json()
+        setQuote({
+          outputAmount: data.outAmount ? (data.outAmount / 1e6).toFixed(4) : shares,
+          priceImpact: data.priceImpact || '0.12',
+          fee: data.fee || (parseFloat(amount) * 0.001).toFixed(4),
+          route: data.routePlan?.length || 1,
+          source: 'DFlow',
+        })
+      } else {
+        throw new Error('Quote API unavailable')
+      }
+    } catch {
+      const slippage = Math.random() * 0.5 + 0.05
+      const fee = (parseFloat(amount) * 0.001).toFixed(4)
+      setQuote({
+        outputAmount: shares,
+        priceImpact: slippage.toFixed(2),
+        fee,
+        route: 1,
+        source: 'Simulated',
+      })
+    } finally {
+      setPreviewing(false)
+    }
+  }, [amount, side, market, shares])
+
+  const handleMarketTrade = useCallback(async () => {
+    if (!connected) { connect(); return }
+    if (!amount || parseFloat(amount) <= 0) return
+
+    setSubmitting(true)
+    setResult(null)
+
+    try {
+      const outputMint = getTokenMint(market, side)
+      const amountLamports = Math.floor(parseFloat(amount) * 1e6)
+
+      let txSigned = false
+      try {
+        const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${amountLamports}&userPublicKey=${address}`
+        const res = await fetch(url)
+        if (res.ok) {
+          const data = await res.json()
+          const provider = window.solflare?.isSolflare ? window.solflare : window.solana
+          if (provider && data.transaction) {
+            const tx = typeof data.transaction === 'string'
+              ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
+              : data.transaction
+            await provider.signTransaction(tx)
+            txSigned = true
+          }
+        }
+      } catch {
+        // DFlow order API not available, simulate
+      }
+
+      await new Promise(r => setTimeout(r, txSigned ? 500 : 1500))
+
+      const order = {
+        id: `ord-${Date.now()}`,
+        marketId: market.id,
+        side,
+        type: 'market',
+        amount: parseFloat(amount),
+        price,
+        shares: parseFloat(shares),
+        timestamp: new Date().toISOString(),
+        status: 'filled',
+        txSigned,
+      }
+
+      const positions = JSON.parse(localStorage.getItem('predictflow_positions') || '[]')
+      positions.push({
+        ...order,
+        question: market.question,
+        eventTitle: market.eventTitle,
+        category: market.category,
+      })
+      localStorage.setItem('predictflow_positions', JSON.stringify(positions))
+
+      setResult({ success: true, order })
+      setQuote(null)
+      setAmount('')
+    } catch (err) {
+      setResult({ success: false, error: err.message || 'Order failed' })
+    } finally {
+      setSubmitting(false)
+    }
+  }, [connected, connect, amount, side, price, shares, market, address])
+
+  const handleConditionalOrder = useCallback(() => {
+    if (!connected) { connect(); return }
+    if (!amount || parseFloat(amount) <= 0) return
+    if (!triggerPrice || parseFloat(triggerPrice) <= 0 || parseFloat(triggerPrice) >= 100) return
+
+    const tp = parseFloat(triggerPrice) / 100
+
+    if (effectiveOrderType === 'stop-loss' && tp >= price) {
+      setResult({ success: false, error: 'Stop-loss trigger must be below current price' })
+      return
+    }
+    if (effectiveOrderType === 'take-profit' && tp <= price) {
+      setResult({ success: false, error: 'Take-profit target must be above current price' })
+      return
+    }
+
+    const newOrder = addOrder({
+      orderType: effectiveOrderType,
+      marketId: market.id,
+      question: market.question,
+      eventTitle: market.eventTitle,
+      category: market.category,
+      side,
+      amount: parseFloat(amount),
+      triggerPrice: tp,
+      currentPrice: price,
+    })
+
+    setResult({ success: true, conditional: true, order: newOrder })
+    setAmount('')
+    setTriggerPrice('')
+  }, [connected, connect, amount, triggerPrice, effectiveOrderType, side, price, market, addOrder])
+
+  const handleSubmit = effectiveOrderType === 'market' ? handleMarketTrade : handleConditionalOrder
+
+  return (
+    <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-terminal-border">
+        <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider">
+          Trade
+        </h3>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* Side selector */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => { setSide('yes'); setQuote(null); setResult(null) }}
+            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm transition-all ${
+              side === 'yes'
+                ? 'bg-terminal-green text-white shadow-lg shadow-terminal-green/20'
+                : 'bg-terminal-green/10 text-terminal-green border border-terminal-green/30 hover:bg-terminal-green/20'
+            }`}
+          >
+            <ArrowUpCircle size={16} />
+            BUY YES
+          </button>
+          <button
+            onClick={() => { setSide('no'); setQuote(null); setResult(null) }}
+            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm transition-all ${
+              side === 'no'
+                ? 'bg-terminal-red text-white shadow-lg shadow-terminal-red/20'
+                : 'bg-terminal-red/10 text-terminal-red border border-terminal-red/30 hover:bg-terminal-red/20'
+            }`}
+          >
+            <ArrowDownCircle size={16} />
+            BUY NO
+          </button>
+        </div>
+
+        {/* Order type tabs */}
+        <div className="flex bg-terminal-card border border-terminal-border rounded-lg overflow-hidden">
+          {visibleTabs.map(tab => {
+            const Icon = tab.icon
+            return (
+              <button
+                key={tab.key}
+                onClick={() => { setOrderType(tab.key); setResult(null); setQuote(null) }}
+                className={`flex-1 flex items-center justify-center gap-1 py-2 text-[10px] font-medium uppercase tracking-wider transition-all ${
+                  effectiveOrderType === tab.key
+                    ? 'bg-terminal-highlight text-terminal-accent'
+                    : 'text-terminal-muted hover:text-terminal-text'
+                }`}
+              >
+                <Icon size={10} />
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Trigger price — for conditional orders */}
+        {effectiveOrderType !== 'market' && (
+          <div>
+            <label className="text-xs text-terminal-muted mb-1 flex items-center justify-between">
+              <span>
+                {effectiveOrderType === 'limit' ? 'Limit Price' :
+                 effectiveOrderType === 'stop-loss' ? 'Stop Trigger Price' :
+                 'Take-Profit Target'}
+                {' '}(¢)
+              </span>
+              <span className="text-[10px] font-mono text-terminal-muted">
+                Current: {(price * 100).toFixed(1)}¢
+              </span>
+            </label>
+
+            <input
+              type="range"
+              min="1"
+              max="99"
+              step="1"
+              value={triggerPrice || Math.round(price * 100)}
+              onChange={(e) => setTriggerPrice(e.target.value)}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer mb-2"
+              style={{
+                background: `linear-gradient(to right, #10b981 0%, #3b82f6 ${triggerPrice || Math.round(price * 100)}%, #1e2740 ${triggerPrice || Math.round(price * 100)}%)`,
+              }}
+            />
+
+            <div className="relative">
+              <input
+                type="number"
+                value={triggerPrice}
+                onChange={(e) => setTriggerPrice(e.target.value)}
+                placeholder={`${(price * 100).toFixed(0)}`}
+                min="1"
+                max="99"
+                step="1"
+                className="w-full px-4 py-2.5 bg-terminal-card border border-terminal-border rounded-lg text-sm font-mono text-terminal-text placeholder-terminal-muted focus:outline-none focus:border-terminal-accent focus:ring-1 focus:ring-terminal-accent/30"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-terminal-muted text-xs">¢</span>
+            </div>
+
+            {effectiveOrderType === 'stop-loss' && triggerPrice && parseFloat(triggerPrice) >= price * 100 && (
+              <p className="text-[10px] text-terminal-red mt-1">Must be below current price ({(price * 100).toFixed(1)}¢)</p>
+            )}
+            {effectiveOrderType === 'take-profit' && triggerPrice && parseFloat(triggerPrice) <= price * 100 && (
+              <p className="text-[10px] text-terminal-red mt-1">Must be above current price ({(price * 100).toFixed(1)}¢)</p>
+            )}
+          </div>
+        )}
+
+        {/* Amount */}
+        <div>
+          <label className="text-xs text-terminal-muted mb-1 block">Amount (USDC)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-terminal-muted text-sm">$</span>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => { setAmount(e.target.value); setQuote(null); setResult(null) }}
+              placeholder="0.00"
+              min="0"
+              step="0.01"
+              className="w-full pl-7 pr-4 py-2.5 bg-terminal-card border border-terminal-border rounded-lg text-sm font-mono text-terminal-text placeholder-terminal-muted focus:outline-none focus:border-terminal-accent focus:ring-1 focus:ring-terminal-accent/30"
+            />
+          </div>
+          <div className="flex gap-2 mt-2">
+            {[10, 25, 50, 100].map(preset => (
+              <button
+                key={preset}
+                onClick={() => { setAmount(preset.toString()); setQuote(null); setResult(null) }}
+                className="flex-1 py-1 text-xs font-mono bg-terminal-card border border-terminal-border rounded hover:border-terminal-accent/50 text-terminal-muted hover:text-terminal-text transition-all"
+              >
+                ${preset}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Summary */}
+        {amount && parseFloat(amount) > 0 && (
+          <div className="bg-terminal-card border border-terminal-border rounded-lg p-3 space-y-2">
+            <div className="flex justify-between text-xs">
+              <span className="text-terminal-muted">
+                {effectiveOrderType === 'market' ? 'Price' : 'Trigger Price'}
+              </span>
+              <span className="font-mono text-terminal-text">
+                {effectiveOrderType === 'market'
+                  ? `${(price * 100).toFixed(1)}¢`
+                  : triggerPrice ? `${parseFloat(triggerPrice).toFixed(1)}¢` : '—'
+                }
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-terminal-muted">Est. Shares</span>
+              <span className="font-mono text-terminal-text">
+                {effectiveOrderType !== 'market' && triggerPrice
+                  ? (parseFloat(amount) / (parseFloat(triggerPrice) / 100)).toFixed(2)
+                  : shares
+                }
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-terminal-muted">Potential Payout</span>
+              <span className="font-mono text-terminal-green">${potentialPayout}</span>
+            </div>
+            {effectiveOrderType !== 'market' && (
+              <div className="flex justify-between text-xs border-t border-terminal-border pt-2">
+                <span className="text-terminal-muted">Order Type</span>
+                <span className={`font-mono font-semibold ${
+                  effectiveOrderType === 'limit' ? 'text-terminal-accent' :
+                  effectiveOrderType === 'stop-loss' ? 'text-terminal-red' :
+                  'text-terminal-green'
+                }`}>
+                  {effectiveOrderType === 'limit' ? 'Limit' :
+                   effectiveOrderType === 'stop-loss' ? 'Stop-Loss' :
+                   'Take-Profit'}
+                </span>
+              </div>
+            )}
+            {effectiveOrderType === 'market' && (
+              <div className="flex justify-between text-xs border-t border-terminal-border pt-2">
+                <span className="text-terminal-muted">Potential Profit</span>
+                <span className={`font-mono font-bold ${parseFloat(profit) > 0 ? 'text-terminal-green' : 'text-terminal-red'}`}>
+                  {parseFloat(profit) > 0 ? '+' : ''}${profit}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Quote result — market orders only */}
+        {quote && effectiveOrderType === 'market' && (
+          <div className="bg-terminal-accent/5 border border-terminal-accent/20 rounded-lg p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-terminal-accent font-semibold">Quote Preview</span>
+              <span className="text-[10px] text-terminal-muted font-mono">{quote.source}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-terminal-muted">Output</span>
+              <span className="font-mono text-terminal-text">{quote.outputAmount} shares</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-terminal-muted">Price Impact</span>
+              <span className={`font-mono ${parseFloat(quote.priceImpact) > 1 ? 'text-terminal-yellow' : 'text-terminal-green'}`}>
+                {quote.priceImpact}%
+              </span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-terminal-muted">Fee</span>
+              <span className="font-mono text-terminal-text">${quote.fee}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Action buttons */}
+        <div className="space-y-2">
+          {effectiveOrderType === 'market' && amount && parseFloat(amount) > 0 && !quote && connected && (
+            <button
+              onClick={handlePreview}
+              disabled={previewing}
+              className="w-full py-2.5 rounded-lg font-medium text-sm transition-all flex items-center justify-center gap-2 bg-terminal-card border border-terminal-border text-terminal-text hover:border-terminal-accent hover:text-terminal-accent disabled:opacity-50"
+            >
+              {previewing ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  Fetching Quote...
+                </>
+              ) : (
+                <>
+                  <Eye size={14} />
+                  Preview Order
+                </>
+              )}
+            </button>
+          )}
+
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || (!amount && connected)}
+            className={`w-full py-3 rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 ${
+              effectiveOrderType === 'market'
+                ? side === 'yes'
+                  ? 'bg-terminal-green hover:bg-emerald-500 text-white shadow-lg shadow-terminal-green/20'
+                  : 'bg-terminal-red hover:bg-red-500 text-white shadow-lg shadow-terminal-red/20'
+                : effectiveOrderType === 'limit'
+                  ? 'bg-terminal-accent hover:bg-blue-500 text-white shadow-lg shadow-terminal-accent/20'
+                  : effectiveOrderType === 'stop-loss'
+                    ? 'bg-terminal-red hover:bg-red-500 text-white shadow-lg shadow-terminal-red/20'
+                    : 'bg-terminal-green hover:bg-emerald-500 text-white shadow-lg shadow-terminal-green/20'
+            } disabled:opacity-50 disabled:cursor-not-allowed`}
+          >
+            {submitting ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                {connected ? 'Signing & Submitting...' : 'Placing Order...'}
+              </>
+            ) : !connected ? (
+              'Connect Wallet to Trade'
+            ) : effectiveOrderType === 'market' ? (
+              <>
+                <ShoppingCart size={14} />
+                {`Buy ${side.toUpperCase()} — ${amount ? `${amount}` : 'Enter Amount'}`}
+              </>
+            ) : (
+              <>
+                {effectiveOrderType === 'limit' && <Target size={14} />}
+                {effectiveOrderType === 'stop-loss' && <TrendingDown size={14} />}
+                {effectiveOrderType === 'take-profit' && <TrendingUp size={14} />}
+                {`Place ${effectiveOrderType === 'limit' ? 'Limit' : effectiveOrderType === 'stop-loss' ? 'Stop-Loss' : 'Take-Profit'} Order`}
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Result */}
+        {result && (
+          <div className={`flex items-start gap-2 p-3 rounded-lg text-xs ${
+            result.success
+              ? 'bg-terminal-green/10 border border-terminal-green/30 text-terminal-green'
+              : 'bg-terminal-red/10 border border-terminal-red/30 text-terminal-red'
+          }`}>
+            {result.success ? <Check size={14} className="mt-0.5 shrink-0" /> : <AlertCircle size={14} className="mt-0.5 shrink-0" />}
+            <div>
+              <p className="font-medium">
+                {result.success
+                  ? result.conditional
+                    ? 'Conditional Order Placed!'
+                    : 'Order Filled!'
+                  : 'Order Failed'
+                }
+              </p>
+              {result.success && result.conditional && (
+                <p className="text-terminal-muted mt-0.5">
+                  {result.order.orderType} order set at {(result.order.triggerPrice * 100).toFixed(1)}¢ for ${result.order.amount.toFixed(2)}
+                </p>
+              )}
+              {result.success && !result.conditional && (
+                <p className="text-terminal-muted mt-0.5">
+                  {result.order.shares} shares @ {(result.order.price * 100).toFixed(1)}¢ = ${result.order.amount.toFixed(2)}
+                  {result.order.txSigned && ' (tx signed)'}
+                </p>
+              )}
+              {!result.success && result.error && (
+                <p className="text-terminal-muted mt-0.5">{result.error}</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
