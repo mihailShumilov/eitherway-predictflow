@@ -1,0 +1,6 @@
+# Cloudflare Pages redirects.
+# Static files and Pages Functions take precedence over these rules, so
+# /api/dflow/* is handled by functions/api/dflow/[[path]].js and hashed
+# assets are served directly. Everything else falls through to the SPA.
+
+/*    /index.html   200

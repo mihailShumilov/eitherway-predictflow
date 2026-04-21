@@ -16,3 +16,6 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+
+.claude/
+CLAUDE.md
