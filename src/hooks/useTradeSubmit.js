@@ -13,6 +13,7 @@ import { decodeDflowTransaction, assertAllowedPrograms, validateTxPayload } from
 import { reportError } from '../lib/errorReporter'
 import { track } from '../lib/analytics'
 import { safeErrorMessage } from '../lib/errorMessage'
+import { classifyOrderResponse, isGateRejection } from '../lib/dflowErrors'
 import { appendPosition } from '../lib/storage'
 
 function getRealMint(market, side) {
@@ -41,7 +42,7 @@ export function useTradeSubmit(market) {
   const { connected, connect, address, activeWallet } = useWallet()
   const { addOrder } = useConditionalOrders()
   const { startStrategy } = useDCA()
-  const { requireKyc, verifyWithServer } = useKyc()
+  const { requireKyc, verifyWithServer, showModalWithReason } = useKyc()
 
   const [submitting, setSubmitting] = useState(false)
   const [previewing, setPreviewing] = useState(false)
@@ -132,7 +133,13 @@ export function useTradeSubmit(market) {
         const res = await fetchWithRetry(url, {
           headers: { 'X-Idempotency-Key': idempotencyKey },
         }, { retries: 1, timeoutMs: 8000 })
-        if (!res.ok) throw new Error(`Order API ${res.status}`)
+        if (!res.ok) {
+          const classification = await classifyOrderResponse(res)
+          const err = new Error(classification.message)
+          err.status = classification.status
+          err.kind = classification.kind
+          throw err
+        }
         const data = await res.json()
 
         const payloadCheck = validateTxPayload(data.transaction)
@@ -207,13 +214,20 @@ export function useTradeSubmit(market) {
       setQuote(null)
     } catch (err) {
       reportError(err, { context: 'handleMarketTrade', marketId: market.id })
-      track('trade_failed', { marketId: market.id, side, reason: err.message })
-      setResult({ success: false, error: safeErrorMessage(err, 'Order failed') })
+      track('trade_failed', { marketId: market.id, side, reason: err.message, kind: err.kind || 'other' })
+      const message = safeErrorMessage(err, 'Order failed')
+      // DFlow is the regulated party — when /order rejects for KYC/compliance
+      // reasons we surface the upstream message in the KYC modal so the user
+      // knows exactly what to go fix.
+      if (isGateRejection({ kind: err.kind })) {
+        showModalWithReason(message)
+      }
+      setResult({ success: false, error: message })
     } finally {
       submissionLocks.delete(nonce)
       setSubmitting(false)
     }
-  }, [connected, connect, requireKyc, verifyWithServer, market, address, activeWallet])
+  }, [connected, connect, requireKyc, verifyWithServer, showModalWithReason, market, address, activeWallet])
 
   const submitConditionalOrder = useCallback(({ orderType, side, amount, triggerPrice }) => {
     if (!connected) { connect(); return }

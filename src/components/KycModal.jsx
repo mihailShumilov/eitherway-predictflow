@@ -25,7 +25,7 @@ function validatedProofUrl(raw) {
 const PROOF_VERIFY_URL = validatedProofUrl(PROOF_URL)
 
 export default function KycModal() {
-  const { showModal, setShowModal, status, markPending, markVerified } = useKyc()
+  const { showModal, setShowModal, status, reason, markPending, markVerified } = useKyc()
   const { openLegal } = useLegalModal()
   const [awaitingConfirm, setAwaitingConfirm] = useState(false)
 
@@ -89,8 +89,17 @@ export default function KycModal() {
           </div>
 
           <p className="text-sm text-terminal-text leading-relaxed mb-3">
-            DFlow prediction markets are powered by <span className="text-white font-semibold">Kalshi</span>, a CFTC-regulated exchange. You need to verify your identity before trading.
+            DFlow prediction markets settle against <span className="text-white font-semibold">Kalshi</span>, a CFTC-regulated exchange. DFlow requires identity verification via Proof before routing your trades — PredictFlow is a non-custodial frontend and does not see your KYC documents.
           </p>
+
+          {reason && (
+            <div className="flex items-start gap-2 bg-terminal-red/10 border border-terminal-red/30 rounded-lg p-3 mb-3 text-xs text-terminal-red">
+              <Info size={12} className="mt-0.5 shrink-0" />
+              <span>
+                <span className="font-semibold">DFlow rejected this order:</span> {reason}
+              </span>
+            </div>
+          )}
 
           <div className="bg-terminal-card border border-terminal-border rounded-lg p-3 mb-4 space-y-2 text-xs text-terminal-muted">
             <div className="flex items-start gap-2">

@@ -18,8 +18,12 @@ const TABS = [
         body: 'By accessing PredictFlow you agree to these terms. If you do not agree, do not use the service.',
       },
       {
-        heading: 'Eligibility',
-        body: 'PredictFlow routes orders to Kalshi, a CFTC-regulated exchange. You must be 18+ and in an eligible jurisdiction. Access is verified through the Proof identity-verification flow before trading.',
+        heading: 'Non-custodial frontend',
+        body: 'PredictFlow is a non-custodial client-side interface. We do not hold funds, do not execute trades, and do not act as a broker, dealer, or exchange. Orders are routed to DFlow and settle against Kalshi, which is the CFTC-regulated counterparty of record.',
+      },
+      {
+        heading: 'Eligibility and identity verification',
+        body: 'Identity verification (KYC/AML) and trade eligibility are performed and enforced by DFlow and Kalshi — not by PredictFlow. You must be 18+ and located in a jurisdiction eligible for Kalshi event contracts. PredictFlow does not collect, store, or review KYC documents; the modal in this app links you to the upstream Proof flow operated by DFlow, and DFlow is the authority that approves or rejects each order.',
       },
       {
         heading: 'No financial advice',
@@ -43,15 +47,15 @@ const TABS = [
     sections: [
       {
         heading: 'What we collect',
-        body: 'PredictFlow is a client-side app. Wallet address and interaction telemetry may be sent to DFlow for order execution and to the KYC provider (Proof) for identity verification. We do not operate a backend user database.',
+        body: 'PredictFlow is a client-side app with no user database. Your wallet address is sent to DFlow for order execution and to Proof (operated by DFlow) for identity verification. PredictFlow itself does not receive, store, or transmit your KYC documents, personal identifiers, or verification status.',
       },
       {
         heading: 'What we store locally',
-        body: 'Preferences, positions, DCA history, and KYC session state are stored in your browser (localStorage). Clearing storage clears this data.',
+        body: 'Preferences, positions, DCA history, and a cached KYC-seen flag are stored in your browser (localStorage). The cached flag is a UX hint only — the authoritative verification check happens at DFlow. Clearing browser storage clears this data.',
       },
       {
         heading: 'Third parties',
-        body: 'DFlow (order routing), Kalshi (settlement), Proof (KYC), Solana RPC providers, and optional analytics/error-tracking vendors each have their own policies.',
+        body: 'DFlow (order routing and KYC enforcement), Kalshi (settlement), Proof (identity verification, operated by DFlow), Solana RPC providers, and optional analytics/error-tracking vendors each have their own privacy policies. PredictFlow has no contractual access to data held by these parties.',
       },
     ],
   },
@@ -76,6 +80,10 @@ const TABS = [
       {
         heading: 'On-chain risk',
         body: 'Transactions sign against Solana. Network congestion, failed simulations, and stale blockhashes can cause submitted orders to fail even after signing. Review each signature request carefully.',
+      },
+      {
+        heading: 'Eligibility rejections',
+        body: 'DFlow and Kalshi can reject an order at any time — for KYC, jurisdiction, sanctions screening, or position-limit reasons. Rejections are surfaced in the trade panel with the upstream reason. PredictFlow has no ability to override or appeal those decisions.',
       },
     ],
   },

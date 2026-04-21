@@ -55,7 +55,8 @@ async function checkRemoteKyc(wallet) {
 export function KycProvider({ children }) {
   const [status, setStatus] = useState(loadStatus)
   const statusRef = useRef(status)
-  const [showModal, setShowModal] = useState(false)
+  const [showModal, setShowModalState] = useState(false)
+  const [reason, setReason] = useState(null)
   // Read the wallet context directly so this provider stays usable in
   // tests/storybooks where WalletProvider isn't mounted. `address` is null
   // when the context is absent — KYC then falls back to demo/self-attestation.
@@ -96,9 +97,25 @@ export function KycProvider({ children }) {
     return () => { cancelled = true }
   }, [address, status, hasBackend])
 
+  // Public setter: opening the modal without a reason clears any stale upstream
+  // rejection text so the default explainer is shown.
+  const setShowModal = useCallback((open) => {
+    setShowModalState(open)
+    if (!open) setReason(null)
+  }, [])
+
+  // Open the modal with an upstream rejection message (e.g. DFlow /order 403).
+  // The message is rendered below the static copy so the user knows *why*
+  // trading was just blocked.
+  const showModalWithReason = useCallback((msg) => {
+    setReason(typeof msg === 'string' && msg.trim() ? msg.trim() : null)
+    setShowModalState(true)
+  }, [])
+
   const requireKyc = useCallback(() => {
     if (status === 'verified') return true
-    setShowModal(true)
+    setReason(null)
+    setShowModalState(true)
     return false
   }, [status])
 
@@ -114,14 +131,16 @@ export function KycProvider({ children }) {
       return true
     }
     setStatus('unverified')
-    setShowModal(true)
+    setReason(null)
+    setShowModalState(true)
     return false
   }, [hasBackend, address, status])
 
   const markPending = useCallback(() => setStatus('pending'), [])
   const markVerified = useCallback(() => {
     setStatus('verified')
-    setShowModal(false)
+    setReason(null)
+    setShowModalState(false)
   }, [])
   const reset = useCallback(() => setStatus('unverified'), [])
 
@@ -131,7 +150,9 @@ export function KycProvider({ children }) {
       verified: status === 'verified',
       hasBackend,
       showModal,
+      reason,
       setShowModal,
+      showModalWithReason,
       requireKyc,
       verifyWithServer,
       markPending,
