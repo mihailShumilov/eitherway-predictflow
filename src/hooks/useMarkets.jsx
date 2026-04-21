@@ -1,36 +1,39 @@
-import React, { useState, useEffect, useCallback, createContext, useContext } from 'react'
-import { mockEvents, mockCategories, flattenMarkets } from '../data/mockMarkets'
+import React, { useState, useEffect, useCallback, useMemo, createContext, useContext } from 'react'
+import { flattenMarkets } from '../data/flattenMarkets'
+import { DFLOW_PROXY_BASE } from '../config/env'
+import { fetchWithRetry } from '../lib/http'
+import { safeGet, safeSet } from '../lib/storage'
+
+// Lazy-loaded mock data. Only imported if the DFlow API fails — keeps
+// ~460 lines of synthetic markets out of the happy-path bundle.
+async function loadMocks() {
+  const mod = await import('../data/mockMarkets')
+  return { mockEvents: mod.mockEvents, mockCategories: mod.mockCategories }
+}
 
 const MarketsContext = createContext(null)
 
-const DFLOW_BASE = '/api/dflow'
+const DFLOW_BASE = DFLOW_PROXY_BASE
 const CACHE_KEY = 'predictflow_markets_cache'
 const CACHE_TTL = 60000
 
 function getCachedData() {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw)
-    if (Date.now() - parsed.timestamp > CACHE_TTL) return null
-    return parsed.data
-  } catch {
-    return null
-  }
+  const parsed = safeGet(CACHE_KEY, null)
+  if (!parsed?.timestamp || !parsed.data) return null
+  if (Date.now() - parsed.timestamp > CACHE_TTL) return null
+  return parsed.data
 }
 
 function setCachedData(data) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() }))
-  } catch {
-    // localStorage full or unavailable
-  }
+  safeSet(CACHE_KEY, { data, timestamp: Date.now() })
 }
+
+const DEFAULT_CATEGORIES = { All: [] }
 
 export function MarketsProvider({ children }) {
   const [events, setEvents] = useState([])
   const [markets, setMarkets] = useState([])
-  const [categories, setCategories] = useState(mockCategories)
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [usingMockData, setUsingMockData] = useState(false)
@@ -54,8 +57,8 @@ export function MarketsProvider({ children }) {
 
     try {
       const [eventsRes, catsRes] = await Promise.all([
-        fetch(`${DFLOW_BASE}/api/v1/events?status=active&withNestedMarkets=true`),
-        fetch(`${DFLOW_BASE}/api/v1/tags_by_categories`),
+        fetchWithRetry(`${DFLOW_BASE}/api/v1/events?status=active&withNestedMarkets=true`),
+        fetchWithRetry(`${DFLOW_BASE}/api/v1/tags_by_categories`),
       ])
 
       if (!eventsRes.ok) throw new Error(`Events API: ${eventsRes.status}`)
@@ -87,7 +90,7 @@ export function MarketsProvider({ children }) {
         })),
       }))
 
-      let catsData = mockCategories
+      let catsData = DEFAULT_CATEGORIES
       if (catsRes.ok) {
         try {
           const rawCats = await catsRes.json()
@@ -95,7 +98,7 @@ export function MarketsProvider({ children }) {
             catsData = rawCats
           }
         } catch {
-          // keep mock categories
+          // keep default
         }
       }
 
@@ -105,6 +108,7 @@ export function MarketsProvider({ children }) {
       setUsingMockData(false)
       setCachedData({ events: normalizedEvents, categories: catsData, isMock: false })
     } catch (err) {
+      const { mockEvents, mockCategories } = await loadMocks()
       setEvents(mockEvents)
       setMarkets(flattenMarkets(mockEvents))
       setCategories(mockCategories)
@@ -137,6 +141,7 @@ export function MarketsProvider({ children }) {
         throw new Error('No results from API')
       }
     } catch {
+      const { mockEvents } = await loadMocks()
       const filtered = mockEvents.filter(e =>
         e.title.toLowerCase().includes(query.toLowerCase()) ||
         e.markets.some(m => m.question.toLowerCase().includes(query.toLowerCase()))
@@ -153,34 +158,30 @@ export function MarketsProvider({ children }) {
     fetchEvents()
   }, [fetchEvents])
 
-  const filteredMarkets = markets
-    .filter(m => {
-      if (selectedCategory === 'All') return true
-      return m.category === selectedCategory
-    })
-    .filter(m => {
-      if (!searchQuery.trim()) return true
-      const q = searchQuery.toLowerCase()
-      return (
-        m.eventTitle.toLowerCase().includes(q) ||
-        m.question.toLowerCase().includes(q) ||
-        m.category.toLowerCase().includes(q)
-      )
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case 'volume':
-          return b.volume - a.volume
-        case 'closeTime':
-          return new Date(a.closeTime) - new Date(b.closeTime)
-        case 'yesPrice':
-          return b.yesAsk - a.yesAsk
-        case 'noPrice':
-          return b.noAsk - a.noAsk
-        default:
-          return 0
-      }
-    })
+  // Memoize — this runs on every provider render and every consumer would
+  // otherwise get a new array identity, defeating React.memo downstream.
+  const filteredMarkets = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    return markets
+      .filter(m => selectedCategory === 'All' || m.category === selectedCategory)
+      .filter(m => {
+        if (!q) return true
+        return (
+          m.eventTitle.toLowerCase().includes(q) ||
+          m.question.toLowerCase().includes(q) ||
+          m.category.toLowerCase().includes(q)
+        )
+      })
+      .sort((a, b) => {
+        switch (sortBy) {
+          case 'volume': return b.volume - a.volume
+          case 'closeTime': return new Date(a.closeTime) - new Date(b.closeTime)
+          case 'yesPrice': return b.yesAsk - a.yesAsk
+          case 'noPrice': return b.noAsk - a.noAsk
+          default: return 0
+        }
+      })
+  }, [markets, selectedCategory, searchQuery, sortBy])
 
   return (
     <MarketsContext.Provider value={{

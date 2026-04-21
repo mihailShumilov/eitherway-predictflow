@@ -1,5 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { generateCandlesticks } from '../data/mockDetailData'
+import { normalizeCandle } from '../lib/normalize'
+import { getChartPalette } from '../lib/palette'
 
 const DFLOW_BASE = '/api/dflow'
 
@@ -9,25 +11,6 @@ const RESOLUTIONS = [
   { key: '1d', label: '1D', count: 30 },
   { key: '1w', label: '1W', count: 20 },
 ]
-
-function normalizeCandle(c) {
-  const time = c.time ?? c.timestamp ?? c.t ?? c.openTime
-  const parsedTime = typeof time === 'number' ? (time < 1e12 ? time * 1000 : time) : new Date(time).getTime()
-  return {
-    time: parsedTime,
-    open: parseFloat(c.open ?? c.o),
-    high: parseFloat(c.high ?? c.h),
-    low: parseFloat(c.low ?? c.l),
-    close: parseFloat(c.close ?? c.c),
-    volume: parseFloat(c.volume ?? c.v ?? 0),
-  }
-}
-
-const GREEN = '#10b981'
-const RED = '#ef4444'
-const GRID = '#1e2740'
-const TEXT = '#64748b'
-const BG = '#0f1423'
 
 function formatTime(ts, resolution) {
   const d = new Date(ts)
@@ -58,9 +41,7 @@ export default function CandlestickChart({ market, orderLines = [] }) {
         const data = await res.json()
         const raw = Array.isArray(data) ? data : (data.data || data.candles || data.candlesticks || [])
         if (!raw.length) throw new Error('Empty candle response')
-        const mapped = raw
-          .map(normalizeCandle)
-          .filter(c => Number.isFinite(c.open) && Number.isFinite(c.close))
+        const mapped = raw.map(normalizeCandle).filter(Boolean)
         if (!mapped.length) throw new Error('No valid candles')
         if (!cancelled) {
           setCandles(mapped)
@@ -94,6 +75,13 @@ export default function CandlestickChart({ market, orderLines = [] }) {
     const canvas = canvasRef.current
     if (!canvas || candles.length === 0) return
 
+    const palette = getChartPalette()
+    const GREEN = palette.green
+    const RED = palette.red
+    const GRID = palette.border
+    const TEXT = palette.muted
+    const BG = palette.surface
+
     const ctx = canvas.getContext('2d')
     const dpr = window.devicePixelRatio || 1
     const { width, height } = dimensions
@@ -102,6 +90,9 @@ export default function CandlestickChart({ market, orderLines = [] }) {
     canvas.height = height * dpr
     canvas.style.width = `${width}px`
     canvas.style.height = `${height}px`
+    // Reset before scaling — canvas size changes reset the transform but
+    // any prior `ctx.scale` would otherwise compound into fuzzier output.
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.scale(dpr, dpr)
 
     // Clear
@@ -204,14 +195,14 @@ export default function CandlestickChart({ market, orderLines = [] }) {
 
     // Order price lines
     const ORDER_LINE_COLORS = {
-      limit: '#3b82f6',
-      'stop-loss': '#ef4444',
-      'take-profit': '#10b981',
+      limit: palette.accent,
+      'stop-loss': palette.red,
+      'take-profit': palette.green,
     }
     orderLines.forEach(line => {
       if (line.triggerPrice < minPrice || line.triggerPrice > maxPrice) return
       const y = toY(line.triggerPrice)
-      const color = ORDER_LINE_COLORS[line.orderType] || '#f59e0b'
+      const color = ORDER_LINE_COLORS[line.orderType] || palette.yellow
 
       ctx.strokeStyle = color
       ctx.lineWidth = 1

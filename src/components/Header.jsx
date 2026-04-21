@@ -4,6 +4,7 @@ import WalletButton from './WalletButton'
 import SearchBar from './SearchBar'
 import AboutModal from './AboutModal'
 import { useMarkets } from '../hooks/useMarkets'
+import { useHealth } from '../hooks/useHealth'
 
 const NAV_ITEMS = [
   { id: 'explore', label: 'Explore', icon: LayoutGrid },
@@ -12,7 +13,9 @@ const NAV_ITEMS = [
 
 export default function Header({ page, onPageChange }) {
   const { usingMockData, allMarkets, refresh, loading } = useMarkets()
+  const { dflow: dflowOk, rpc: rpcOk } = useHealth()
   const [aboutOpen, setAboutOpen] = useState(false)
+  const anyDegraded = dflowOk === false || rpcOk === false
 
   return (
     <header className="bg-terminal-surface border-b border-terminal-border sticky top-0 z-40">
@@ -58,14 +61,23 @@ export default function Header({ page, onPageChange }) {
           <div className="hidden md:block h-8 w-px bg-terminal-border" />
 
           <div className="hidden md:flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-1.5">
-              {usingMockData ? (
-                <WifiOff size={12} className="text-terminal-yellow" />
+            <div
+              className="flex items-center gap-1.5"
+              title={anyDegraded
+                ? `Degraded: ${dflowOk === false ? 'DFlow ' : ''}${rpcOk === false ? 'RPC' : ''}`
+                : usingMockData ? 'Running on mock market data' : 'Connected to DFlow'}
+            >
+              {usingMockData || anyDegraded ? (
+                <WifiOff size={12} className={anyDegraded ? 'text-terminal-red' : 'text-terminal-yellow'} />
               ) : (
                 <Wifi size={12} className="text-terminal-green" />
               )}
-              <span className={usingMockData ? 'text-terminal-yellow' : 'text-terminal-green'}>
-                {usingMockData ? 'DEMO' : 'LIVE'}
+              <span className={
+                anyDegraded ? 'text-terminal-red'
+                  : usingMockData ? 'text-terminal-yellow'
+                    : 'text-terminal-green'
+              }>
+                {anyDegraded ? 'DEGRADED' : usingMockData ? 'DEMO' : 'LIVE'}
               </span>
             </div>
             <div className="text-terminal-muted">

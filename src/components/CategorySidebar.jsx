@@ -21,7 +21,7 @@ const categoryColors = {
 export default function CategorySidebar() {
   const { categories, selectedCategory, setSelectedCategory, allMarkets } = useMarkets()
 
-  const categoryList = ['All', ...Object.keys(categories)]
+  const categoryList = ['All', ...Object.keys(categories).filter(c => c !== 'All')]
 
   const getCategoryCount = (cat) => {
     if (cat === 'All') return allMarkets.length

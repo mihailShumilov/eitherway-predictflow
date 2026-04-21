@@ -1,17 +1,8 @@
 import React from 'react'
 import { Clock, TrendingUp, DollarSign, ArrowUp, ArrowDown, Lock } from 'lucide-react'
-import { format } from 'date-fns'
+import { formatMarketClose } from '../lib/dateFormat'
+import { formatUsd, priceToPercent } from '../lib/format'
 import { usePriceFlash } from '../hooks/useLivePrices'
-
-function formatUsd(num) {
-  if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`
-  if (num >= 1e3) return `$${(num / 1e3).toFixed(0)}K`
-  return `$${num.toFixed(0)}`
-}
-
-function priceToPercent(price) {
-  return `${(price * 100).toFixed(0)}¢`
-}
 
 function getUrgencyColor(closeTime) {
   const hours = (new Date(closeTime) - Date.now()) / 3600000
@@ -21,7 +12,7 @@ function getUrgencyColor(closeTime) {
 }
 
 export default function MarketCard({ market, onSelect }) {
-  const closeLabel = format(new Date(market.closeTime), 'MMM d, HH:mm')
+  const closeLabel = formatMarketClose(market.closeTime)
   const urgencyColor = getUrgencyColor(market.closeTime)
   const yesPercent = (market.yesAsk * 100).toFixed(0)
   const noPercent = (market.noAsk * 100).toFixed(0)

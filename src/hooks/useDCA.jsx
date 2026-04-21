@@ -1,12 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from 'react'
 import { useWallet } from './useWallet'
+import { DFLOW_ORDER_URL, USDC_MINT, ALLOW_SYNTHESIZED_MINTS, ALLOW_SIMULATED_FILLS } from '../config/env'
+import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
+import { reportError } from '../lib/errorReporter'
+import { track } from '../lib/analytics'
+import { safeGet, safeSet, appendPosition } from '../lib/storage'
 
 const DCAContext = createContext(null)
 
 const STORAGE_KEY = 'predictflow_dca_strategies'
 const TICK_INTERVAL = 30000
-const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
 export const DCA_FREQUENCIES = [
   { key: '1h', label: '1 hour', ms: 3600000 },
@@ -20,19 +23,12 @@ function freqMs(key) {
 }
 
 function load() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
-  } catch {
-    return []
-  }
+  const v = safeGet(STORAGE_KEY, [])
+  return Array.isArray(v) ? v : []
 }
 
 function save(strategies) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(strategies))
-  } catch {
-    // storage full
-  }
+  safeSet(STORAGE_KEY, strategies)
 }
 
 function generateId() {
@@ -44,19 +40,32 @@ function totalPurchasesFor(budget, perBuy) {
   return Math.floor(budget / perBuy)
 }
 
-// Mirrors TradePanel's market-order flow: try DFlow + wallet-sign, otherwise simulate.
+// Try real DFlow order + wallet sign. Returns null if the order couldn't be
+// signed and simulated fills are disabled (prod default). Otherwise returns
+// an execution record. Never silently fakes money in prod.
 async function submitDcaBuy({ strategy, address, provider, currentPrice }) {
-  const outputMint = strategy.side === 'yes'
-    ? (strategy.yesMint || `YES-${strategy.marketId}-mint`)
-    : (strategy.noMint || `NO-${strategy.marketId}-mint`)
+  const realMint = strategy.side === 'yes' ? strategy.yesMint : strategy.noMint
+  const outputMint = realMint || (ALLOW_SYNTHESIZED_MINTS
+    ? (strategy.side === 'yes' ? `YES-${strategy.marketId}-mint` : `NO-${strategy.marketId}-mint`)
+    : null)
+
+  if (!outputMint) {
+    const err = new Error('DCA buy skipped: no outcome mint for this market')
+    reportError(err, { strategyId: strategy.id, marketId: strategy.marketId })
+    return null
+  }
+
   const amountLamports = Math.floor(strategy.amountPerBuy * 1e6)
+  const idempotencyKey = generateIdempotencyKey('dca')
 
   let txSigned = false
   let txSignature = null
 
   try {
     const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${encodeURIComponent(outputMint)}&amount=${amountLamports}&userPublicKey=${address}`
-    const res = await fetch(url)
+    const res = await fetchWithRetry(url, {
+      headers: { 'X-Idempotency-Key': idempotencyKey },
+    }, { retries: 1, timeoutMs: 6000 })
     if (res.ok) {
       const data = await res.json()
       if (provider && data.transaction) {
@@ -70,12 +79,24 @@ async function submitDcaBuy({ strategy, address, provider, currentPrice }) {
           : (data.txSignature || null)
       }
     }
-  } catch {
-    // fall through to simulated fill
+  } catch (err) {
+    reportError(err, { context: 'submitDcaBuy', strategyId: strategy.id })
+  }
+
+  if (!txSigned && !ALLOW_SIMULATED_FILLS) {
+    // Prod: don't record a fake execution. Caller leaves nextRunAt alone so
+    // the strategy will retry on the next tick.
+    return null
   }
 
   const price = currentPrice ?? 0.5
   const shares = strategy.amountPerBuy / price
+
+  track('dca_execution', {
+    strategyId: strategy.id,
+    simulated: !txSigned,
+    amount: strategy.amountPerBuy,
+  })
 
   return {
     id: `dca-fill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -139,30 +160,26 @@ export function DCAProvider({ children }) {
   }, [])
 
   // Persist a completed DCA purchase into the positions ledger so it shows
-  // up in Positions + Portfolio alongside other trades.
+  // up in Positions + Portfolio alongside other trades. Write is serialized
+  // through appendPosition() so concurrent manual/conditional/DCA writes
+  // don't clobber each other.
   const recordPosition = useCallback((strategy, execution) => {
-    try {
-      const positions = JSON.parse(localStorage.getItem('predictflow_positions') || '[]')
-      positions.push({
-        id: `ord-${execution.id}`,
-        marketId: strategy.marketId,
-        side: strategy.side,
-        type: 'dca',
-        amount: execution.amount,
-        price: execution.price,
-        shares: execution.shares,
-        timestamp: execution.timestamp,
-        status: 'filled',
-        txSigned: execution.txSigned,
-        question: strategy.question,
-        eventTitle: strategy.eventTitle,
-        category: strategy.category,
-        dcaStrategyId: strategy.id,
-      })
-      localStorage.setItem('predictflow_positions', JSON.stringify(positions))
-    } catch {
-      // storage full — skip position record, DCA execution still recorded in strategy
-    }
+    return appendPosition({
+      id: `ord-${execution.id}`,
+      marketId: strategy.marketId,
+      side: strategy.side,
+      type: 'dca',
+      amount: execution.amount,
+      price: execution.price,
+      shares: execution.shares,
+      timestamp: execution.timestamp,
+      status: 'filled',
+      txSigned: execution.txSigned,
+      question: strategy.question,
+      eventTitle: strategy.eventTitle,
+      category: strategy.category,
+      dcaStrategyId: strategy.id,
+    })
   }, [])
 
   const runStrategy = useCallback(async (strategy) => {
@@ -176,7 +193,13 @@ export function DCAProvider({ children }) {
         provider,
         currentPrice: strategy.referencePrice,
       })
-      recordPosition(strategy, execution)
+
+      if (!execution) {
+        // No fill this tick — leave strategy as-is so the next tick retries.
+        return
+      }
+
+      await recordPosition(strategy, execution)
 
       setStrategies(prev => prev.map(s => {
         if (s.id !== strategy.id) return s
@@ -198,7 +221,9 @@ export function DCAProvider({ children }) {
     }
   }, [activeWallet, address, recordPosition])
 
+  const hasActive = strategies.some(s => s.status === 'active')
   useEffect(() => {
+    if (!hasActive) return
     let cancelled = false
     const tick = () => {
       if (cancelled) return
@@ -214,9 +239,12 @@ export function DCAProvider({ children }) {
     tick()
     const interval = setInterval(tick, TICK_INTERVAL)
     return () => { cancelled = true; clearInterval(interval) }
-  }, [runStrategy])
+  }, [hasActive, runStrategy])
 
-  const activeStrategies = strategies.filter(s => s.status === 'active')
+  const activeStrategies = useMemo(
+    () => strategies.filter(s => s.status === 'active'),
+    [strategies]
+  )
   const strategiesForMarket = useCallback((marketId) => {
     return strategies.filter(s => s.marketId === marketId)
   }, [strategies])

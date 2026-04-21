@@ -1,0 +1,310 @@
+import { useCallback, useState } from 'react'
+import { useWallet } from './useWallet'
+import { useConditionalOrders } from './useConditionalOrders'
+import { useDCA } from './useDCA'
+import { useKyc } from './useKyc'
+import {
+  DFLOW_QUOTE_URL, DFLOW_ORDER_URL, USDC_MINT,
+  ALLOW_SYNTHESIZED_MINTS, ALLOW_SIMULATED_FILLS,
+} from '../config/env'
+import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
+import { preflightTransaction } from '../lib/solanaPreflight'
+import { decodeDflowTransaction, assertAllowedPrograms, validateTxPayload } from '../lib/txDecoder'
+import { reportError } from '../lib/errorReporter'
+import { track } from '../lib/analytics'
+import { safeErrorMessage } from '../lib/errorMessage'
+import { appendPosition } from '../lib/storage'
+
+function getRealMint(market, side) {
+  if (side === 'yes' && market.yesMint) return market.yesMint
+  if (side === 'no' && market.noMint) return market.noMint
+  return null
+}
+
+function getTokenMint(market, side) {
+  const real = getRealMint(market, side)
+  if (real) return real
+  if (ALLOW_SYNTHESIZED_MINTS) {
+    return side === 'yes' ? `YES-${market.id}-mint` : `NO-${market.id}-mint`
+  }
+  return null
+}
+
+// Module-level inflight lock — survives a component remount so closing and
+// reopening the trade panel while a submit is still pending cannot double-spend.
+const submissionLocks = new Set()
+
+// Encapsulates every trade-submission path (market / conditional / DCA) plus
+// quote preview. Returns the UX state the panel wants to render and the set of
+// handlers the panel wires to buttons.
+export function useTradeSubmit(market) {
+  const { connected, connect, address, activeWallet } = useWallet()
+  const { addOrder } = useConditionalOrders()
+  const { startStrategy } = useDCA()
+  const { requireKyc, verifyWithServer } = useKyc()
+
+  const [submitting, setSubmitting] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [quote, setQuote] = useState(null)
+  const [result, setResult] = useState(null)
+
+  const resetQuote = useCallback(() => setQuote(null), [])
+  const resetResult = useCallback(() => setResult(null), [])
+
+  const previewQuote = useCallback(async ({ side, amount }) => {
+    if (!amount || parseFloat(amount) <= 0) return
+    setPreviewing(true)
+    setQuote(null)
+    const price = side === 'yes' ? market.yesAsk : market.noAsk
+    const shares = (parseFloat(amount) / price).toFixed(2)
+
+    try {
+      const outputMint = getTokenMint(market, side)
+      if (!outputMint) throw new Error('Market has no tradeable outcome mint')
+      const amountLamports = Math.floor(parseFloat(amount) * 1e6)
+      const url = `${DFLOW_QUOTE_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${amountLamports}`
+      const res = await fetchWithRetry(url, {}, { retries: 1, timeoutMs: 6000 })
+      if (res.ok) {
+        const data = await res.json()
+        setQuote({
+          outputAmount: data.outAmount ? (data.outAmount / 1e6).toFixed(4) : shares,
+          priceImpact: data.priceImpact || '0.12',
+          fee: data.fee || (parseFloat(amount) * 0.001).toFixed(4),
+          route: data.routePlan?.length || 1,
+          source: 'DFlow',
+        })
+      } else {
+        throw new Error('Quote API unavailable')
+      }
+    } catch (err) {
+      if (!ALLOW_SIMULATED_FILLS) {
+        setQuote({ error: err.message || 'Unable to fetch quote. Try again.' })
+        return
+      }
+      const slippage = Math.random() * 0.5 + 0.05
+      const fee = (parseFloat(amount) * 0.001).toFixed(4)
+      setQuote({
+        outputAmount: shares,
+        priceImpact: slippage.toFixed(2),
+        fee,
+        route: 1,
+        source: 'Simulated',
+      })
+    } finally {
+      setPreviewing(false)
+    }
+  }, [market])
+
+  const submitMarketTrade = useCallback(async ({ side, amount }) => {
+    if (!connected) { connect(); return }
+    if (!requireKyc()) return
+    const serverOk = await verifyWithServer()
+    if (!serverOk) return
+    if (!amount || parseFloat(amount) <= 0) return
+
+    const nonce = `${market.id}:${side}:${amount}`
+    if (submissionLocks.has(nonce)) return
+    submissionLocks.add(nonce)
+
+    setSubmitting(true)
+    setResult(null)
+
+    const price = side === 'yes' ? market.yesAsk : market.noAsk
+    const shares = (parseFloat(amount) / price).toFixed(2)
+
+    let firstError = null
+    const fail = (err) => { if (!firstError) firstError = err }
+
+    try {
+      const outputMint = getTokenMint(market, side)
+      if (!outputMint) {
+        throw new Error('This market has no tradeable outcome mint yet. Try another market.')
+      }
+      const amountLamports = Math.floor(parseFloat(amount) * 1e6)
+      const idempotencyKey = generateIdempotencyKey('mkt')
+      track('trade_submit', { marketId: market.id, side, amount: parseFloat(amount), orderType: 'market' })
+
+      let txSigned = false
+      let txSignature = null
+
+      try {
+        const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${amountLamports}&userPublicKey=${address}`
+        const res = await fetchWithRetry(url, {
+          headers: { 'X-Idempotency-Key': idempotencyKey },
+        }, { retries: 1, timeoutMs: 8000 })
+        if (!res.ok) throw new Error(`Order API ${res.status}`)
+        const data = await res.json()
+
+        const payloadCheck = validateTxPayload(data.transaction)
+        if (!payloadCheck.ok) throw new Error(payloadCheck.error)
+
+        const provider = activeWallet?.getProvider?.()
+        if (!provider) throw new Error('No wallet provider — please reconnect')
+        if (!data.transaction) throw new Error('Order API returned no transaction')
+
+        // Decode + whitelist BEFORE signing — a compromised DFlow server can
+        // otherwise swap in a drain-wallet instruction.
+        const decoded = decodeDflowTransaction(data.transaction)
+        if (!decoded.ok) throw new Error(decoded.error)
+        const whitelist = assertAllowedPrograms(decoded.tx)
+        if (!whitelist.ok) throw new Error(whitelist.error)
+
+        const txBytes = typeof data.transaction === 'string'
+          ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
+          : data.transaction
+
+        const pf = await preflightTransaction(txBytes)
+        if (!pf.ok) {
+          throw new Error(pf.unreachable
+            ? 'Could not verify order with Solana RPC. Please try again.'
+            : `Simulation failed: ${pf.error}`)
+        }
+
+        if (typeof provider.signAndSendTransaction === 'function') {
+          const sent = await provider.signAndSendTransaction(decoded.tx)
+          txSignature = sent?.signature || sent?.publicKey || null
+          txSigned = !!txSignature
+        } else if (typeof provider.signTransaction === 'function') {
+          const signedTx = await provider.signTransaction(decoded.tx)
+          const sig = signedTx?.signatures?.[0]
+          const sigBytes = sig?.signature || (sig instanceof Uint8Array ? sig : null)
+          txSignature = sigBytes
+            ? Array.from(sigBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+            : 'signed'
+          txSigned = true
+        } else {
+          throw new Error('Wallet does not support signing')
+        }
+      } catch (err) {
+        fail(err)
+      }
+
+      if (!txSigned && !ALLOW_SIMULATED_FILLS) {
+        throw firstError || new Error('Order could not be signed. No trade was placed.')
+      }
+
+      const order = {
+        id: idempotencyKey,
+        marketId: market.id,
+        side,
+        type: 'market',
+        amount: parseFloat(amount),
+        price,
+        shares: parseFloat(shares),
+        timestamp: new Date().toISOString(),
+        status: 'filled',
+        txSigned,
+        txSignature: txSignature || (txSigned ? 'signed' : 'simulated'),
+      }
+      appendPosition({
+        ...order,
+        question: market.question,
+        eventTitle: market.eventTitle,
+        category: market.category,
+      })
+      track('trade_filled', { marketId: market.id, side, amount: parseFloat(amount), simulated: !txSigned })
+      setResult({ success: true, order })
+      setQuote(null)
+    } catch (err) {
+      reportError(err, { context: 'handleMarketTrade', marketId: market.id })
+      track('trade_failed', { marketId: market.id, side, reason: err.message })
+      setResult({ success: false, error: safeErrorMessage(err, 'Order failed') })
+    } finally {
+      submissionLocks.delete(nonce)
+      setSubmitting(false)
+    }
+  }, [connected, connect, requireKyc, verifyWithServer, market, address, activeWallet])
+
+  const submitConditionalOrder = useCallback(({ orderType, side, amount, triggerPrice }) => {
+    if (!connected) { connect(); return }
+    if (!requireKyc()) return
+    if (!amount || parseFloat(amount) <= 0) return
+    if (!triggerPrice || parseFloat(triggerPrice) <= 0 || parseFloat(triggerPrice) >= 100) return
+
+    const tp = parseFloat(triggerPrice) / 100
+    const price = side === 'yes' ? market.yesAsk : market.noAsk
+    if (orderType === 'stop-loss' && tp >= price) {
+      setResult({ success: false, error: 'Stop-loss trigger must be below current price' })
+      return
+    }
+    if (orderType === 'take-profit' && tp <= price) {
+      setResult({ success: false, error: 'Take-profit target must be above current price' })
+      return
+    }
+    const hasRealMints = !!(market.yesMint && market.noMint)
+    if (!hasRealMints && !ALLOW_SYNTHESIZED_MINTS) {
+      setResult({ success: false, error: 'This market has no tradeable outcome mint yet.' })
+      return
+    }
+
+    const newOrder = addOrder({
+      orderType,
+      marketId: market.id,
+      marketTicker: market.ticker,
+      eventTicker: market.eventTicker,
+      yesMint: market.yesMint,
+      noMint: market.noMint,
+      question: market.question,
+      eventTitle: market.eventTitle,
+      category: market.category,
+      side,
+      amount: parseFloat(amount),
+      triggerPrice: tp,
+      currentPrice: price,
+    })
+    track('conditional_order_placed', {
+      marketId: market.id, orderType, side, amount: parseFloat(amount), triggerPrice: tp,
+    })
+    setResult({ success: true, conditional: true, order: newOrder })
+  }, [connected, connect, requireKyc, market, addOrder])
+
+  const submitDca = useCallback(({ side, amountPerBuy, frequency, totalBudget }) => {
+    if (!connected) { connect(); return }
+    if (!requireKyc()) return
+    const hasRealMints = !!(market.yesMint && market.noMint)
+    if (!hasRealMints && !ALLOW_SYNTHESIZED_MINTS) {
+      setResult({ success: false, error: 'This market has no tradeable outcome mint yet.' })
+      return
+    }
+    const perBuy = parseFloat(amountPerBuy) || 0
+    const budget = parseFloat(totalBudget) || 0
+    const purchases = perBuy > 0 ? Math.floor(budget / perBuy) : 0
+    if (perBuy <= 0 || budget <= 0 || purchases <= 0) {
+      setResult({ success: false, error: 'Enter valid amount and budget' })
+      return
+    }
+    const price = side === 'yes' ? market.yesAsk : market.noAsk
+    const strategy = startStrategy({
+      marketId: market.id,
+      marketTicker: market.ticker,
+      eventTicker: market.eventTicker,
+      yesMint: market.yesMint,
+      noMint: market.noMint,
+      question: market.question,
+      eventTitle: market.eventTitle,
+      category: market.category,
+      side,
+      amountPerBuy: perBuy,
+      frequency,
+      totalBudget: budget,
+      referencePrice: price,
+    })
+    track('dca_started', {
+      marketId: market.id, side, amountPerBuy: perBuy, budget, frequency,
+    })
+    setResult({ success: true, dca: true, strategy })
+  }, [connected, connect, requireKyc, market, startStrategy])
+
+  return {
+    submitting,
+    previewing,
+    quote,
+    result,
+    resetQuote,
+    resetResult,
+    previewQuote,
+    submitMarketTrade,
+    submitConditionalOrder,
+    submitDca,
+  }
+}

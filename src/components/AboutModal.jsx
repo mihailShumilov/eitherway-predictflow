@@ -3,8 +3,8 @@ import {
   X, Activity, Target, TrendingDown, TrendingUp, Repeat,
   BookOpen, ExternalLink, Zap, ShieldCheck
 } from 'lucide-react'
-
-const DFLOW_DOCS_URL = 'https://docs.dflow.net'
+import { useFocusTrap } from '../hooks/useFocusTrap'
+import { DFLOW_DOCS_URL } from '../config/env'
 
 const FEATURES = [
   {
@@ -39,15 +39,24 @@ const INTEGRATIONS = [
 ]
 
 export default function AboutModal({ open, onClose }) {
+  const containerRef = useFocusTrap(open, onClose)
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="about-modal-title"
+    >
       <div
         className="absolute inset-0 bg-black/70 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-terminal-surface border border-terminal-border rounded-xl shadow-2xl animate-slide-in">
+      <div
+        ref={containerRef}
+        className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-terminal-surface border border-terminal-border rounded-xl shadow-2xl animate-slide-in"
+      >
         <button
           onClick={onClose}
           className="sticky top-3 float-right mr-3 p-1.5 rounded-lg text-terminal-muted hover:text-white hover:bg-terminal-highlight transition-all z-10"
@@ -62,7 +71,7 @@ export default function AboutModal({ open, onClose }) {
               <Activity size={20} className="text-white" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-white tracking-tight">About PredictFlow</h2>
+              <h2 id="about-modal-title" className="text-xl font-bold text-white tracking-tight">About PredictFlow</h2>
               <p className="text-[11px] text-terminal-muted uppercase tracking-widest font-mono">
                 DFlow Terminal · v1.0
               </p>

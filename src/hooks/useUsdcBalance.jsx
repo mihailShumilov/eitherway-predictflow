@@ -1,11 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
-const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-const RPC_ENDPOINTS = [
-  'https://api.devnet.solana.com',
-  'https://api.mainnet-beta.solana.com',
-]
+import { USDC_MINT, SPL_TOKEN_PROGRAM, SOLANA_RPC_ENDPOINTS } from '../config/env'
+import { reportError } from '../lib/errorReporter'
+import { maskWallet } from '../lib/privacy'
 
 async function rpcCall(endpoint, method, params) {
   const res = await fetch(endpoint, {
@@ -22,7 +18,7 @@ async function rpcCall(endpoint, method, params) {
 async function fetchUsdcFromEndpoint(endpoint, address) {
   const result = await rpcCall(endpoint, 'getTokenAccountsByOwner', [
     address,
-    { mint: USDC_MINT, programId: TOKEN_PROGRAM_ID },
+    { mint: USDC_MINT, programId: SPL_TOKEN_PROGRAM },
     { encoding: 'jsonParsed' },
   ])
   const accounts = result?.value || []
@@ -39,16 +35,18 @@ export function useUsdcBalance(address) {
   const refresh = useCallback(async () => {
     if (!address) { setBalance(null); return }
     setLoading(true)
-    for (const endpoint of RPC_ENDPOINTS) {
+    let lastErr
+    for (const endpoint of SOLANA_RPC_ENDPOINTS) {
       try {
         const amount = await fetchUsdcFromEndpoint(endpoint, address)
         setBalance(amount)
         setLoading(false)
         return
-      } catch {
-        // try next endpoint
+      } catch (err) {
+        lastErr = err
       }
     }
+    if (lastErr) reportError(lastErr, { context: 'useUsdcBalance', wallet: maskWallet(address) })
     setBalance(null)
     setLoading(false)
   }, [address])

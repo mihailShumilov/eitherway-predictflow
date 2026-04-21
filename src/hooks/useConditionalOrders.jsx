@@ -1,28 +1,30 @@
-import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from 'react'
 import { useWallet } from './useWallet'
+import {
+  DFLOW_PROXY_BASE as DFLOW_BASE,
+  DFLOW_ORDER_URL,
+  USDC_MINT,
+  LIVE_PRICE_URL,
+  ALLOW_SIMULATED_FILLS,
+} from '../config/env'
+import { fetchWithRetry } from '../lib/http'
+import { reportError } from '../lib/errorReporter'
+import { track } from '../lib/analytics'
+import { safeGet, safeSet, appendPosition } from '../lib/storage'
+import { shouldTriggerOrder } from '../lib/triggers'
 
 const OrdersContext = createContext(null)
 
 const STORAGE_KEY = 'predictflow_conditional_orders'
 const POLL_INTERVAL = 5000
-const DFLOW_BASE = '/api/dflow'
-const DFLOW_ORDER_URL = 'https://dev-quote-api.dflow.net/order'
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
 function loadOrders() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
-  } catch {
-    return []
-  }
+  const v = safeGet(STORAGE_KEY, [])
+  return Array.isArray(v) ? v : []
 }
 
 function saveOrders(orders) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(orders))
-  } catch {
-    // storage full
-  }
+  safeSet(STORAGE_KEY, orders)
 }
 
 function generateId() {
@@ -30,6 +32,8 @@ function generateId() {
 }
 
 // DFlow live_data payload shape isn't formally documented — probe a few common layouts.
+// If marketId is provided we REQUIRE a match. Falling back to the first candidate
+// with a yes price risks using a sibling market's quote for this order.
 function parseLivePrice(payload, marketId) {
   if (!payload) return null
   const candidates = [payload]
@@ -51,7 +55,10 @@ function parseLivePrice(payload, marketId) {
         if (yes !== null) return { yes, no: 1 - yes }
       }
     }
+    // Marked explicitly — caller supplied a marketId and we couldn't find it.
+    return null
   }
+
   for (const c of candidates) {
     if (!c || typeof c !== 'object') continue
     const yes = pickYes(c)
@@ -61,17 +68,32 @@ function parseLivePrice(payload, marketId) {
 }
 
 async function fetchLivePrice(order) {
+  // Prefer an explicitly-configured live-price URL (env override); then fall
+  // back to the DFlow by-event endpoint; then to simulated drift (dev only).
+  const candidateUrls = []
+  if (LIVE_PRICE_URL) {
+    candidateUrls.push(LIVE_PRICE_URL.replace('{eventTicker}', encodeURIComponent(order.eventTicker || '')))
+  }
   if (order.eventTicker) {
+    candidateUrls.push(`${DFLOW_BASE}/api/v1/live_data/by-event/${encodeURIComponent(order.eventTicker)}`)
+  }
+
+  for (const url of candidateUrls) {
     try {
-      const res = await fetch(`${DFLOW_BASE}/api/v1/live_data/by-event/${encodeURIComponent(order.eventTicker)}`)
+      const res = await fetchWithRetry(url, {}, { retries: 1, timeoutMs: 3000 })
       if (res.ok) {
         const data = await res.json()
         const parsed = parseLivePrice(data, order.marketId)
         if (parsed) return { ...parsed, source: 'dflow' }
       }
     } catch {
-      // fall through to simulated drift
+      // try next candidate
     }
+  }
+
+  if (!ALLOW_SIMULATED_FILLS) {
+    // In prod, never invent prices. Return null so the trigger loop skips this order.
+    return null
   }
   const base = order.currentPrice ?? 0.5
   const drift = (Math.random() - 0.5) * 0.04
@@ -157,15 +179,20 @@ export function OrdersProvider({ children }) {
     ))
 
     const txSigned = await submitToDflow(order)
-    if (!txSigned) {
-      await new Promise(r => setTimeout(r, 1200))
+
+    if (!txSigned && !ALLOW_SIMULATED_FILLS) {
+      // In prod mode, a failed submit means no fill — revert to pending so
+      // the next poll can try again.
+      setOrders(prev => prev.map(o =>
+        o.id === order.id ? { ...o, status: 'pending' } : o
+      ))
+      return
     }
 
     const fillPrice = order.side === 'yes' ? livePrice.yes : livePrice.no
     const shares = order.amount / fillPrice
 
-    const positions = JSON.parse(localStorage.getItem('predictflow_positions') || '[]')
-    positions.push({
+    await appendPosition({
       id: `ord-${Date.now()}`,
       marketId: order.marketId,
       side: order.side,
@@ -180,7 +207,6 @@ export function OrdersProvider({ children }) {
       eventTitle: order.eventTitle,
       category: order.category,
     })
-    localStorage.setItem('predictflow_positions', JSON.stringify(positions))
 
     setOrders(prev => prev.map(o =>
       o.id === order.id ? { ...o, status: 'filled', filledAt: new Date().toISOString(), fillPrice, txSigned } : o
@@ -192,9 +218,19 @@ export function OrdersProvider({ children }) {
     addNotification(`${typeLabel} triggered${suffix}! ${order.side.toUpperCase()} ${shares.toFixed(2)} shares @ ${(fillPrice * 100).toFixed(1)}¢`)
   }, [addNotification, submitToDflow])
 
+  // Keep a ref to orders so the interval's effect doesn't tear down
+  // every time an order is added/updated. This eliminates the race
+  // where a fill in flight could be missed.
+  const ordersRef = useRef(orders)
+  useEffect(() => { ordersRef.current = orders }, [orders])
+
+  // Only run the polling loop when there's something to monitor.
+  const hasPending = orders.some(o => o.status === 'pending')
+
   useEffect(() => {
+    if (!hasPending) return
     const interval = setInterval(async () => {
-      const pending = orders.filter(o => o.status === 'pending')
+      const pending = ordersRef.current.filter(o => o.status === 'pending')
       if (pending.length === 0) return
 
       const byMarket = {}
@@ -205,21 +241,12 @@ export function OrdersProvider({ children }) {
 
       for (const [marketId, marketOrders] of Object.entries(byMarket)) {
         const livePrice = await fetchLivePrice(marketOrders[0])
+        if (!livePrice) continue
         priceCache.current[marketId] = livePrice
 
         for (const order of marketOrders) {
           const currentSidePrice = order.side === 'yes' ? livePrice.yes : livePrice.no
-          let shouldExecute = false
-
-          if (order.orderType === 'limit') {
-            shouldExecute = currentSidePrice <= order.triggerPrice
-          } else if (order.orderType === 'stop-loss') {
-            shouldExecute = currentSidePrice <= order.triggerPrice
-          } else if (order.orderType === 'take-profit') {
-            shouldExecute = currentSidePrice >= order.triggerPrice
-          }
-
-          if (shouldExecute) {
+          if (shouldTriggerOrder(order, currentSidePrice)) {
             executeOrder(order, livePrice)
           }
         }
@@ -227,9 +254,12 @@ export function OrdersProvider({ children }) {
     }, POLL_INTERVAL)
 
     return () => clearInterval(interval)
-  }, [orders, executeOrder])
+  }, [hasPending, executeOrder])
 
-  const pendingOrders = orders.filter(o => o.status === 'pending')
+  const pendingOrders = useMemo(
+    () => orders.filter(o => o.status === 'pending'),
+    [orders]
+  )
   const activeOrdersForMarket = useCallback((marketId) => {
     return orders.filter(o => o.marketId === marketId && (o.status === 'pending' || o.status === 'executing'))
   }, [orders])

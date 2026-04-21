@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react'
-import { Activity, Clock } from 'lucide-react'
+import React, { useState, useEffect, memo } from 'react'
+import { Activity, Clock, Download } from 'lucide-react'
+import { useInstallPrompt } from '../hooks/useInstallPrompt'
+import { useLegalModal } from '../hooks/useLegalModal'
 
 function DflowLogo({ size = 12 }) {
   return (
@@ -10,31 +12,34 @@ function DflowLogo({ size = 12 }) {
           <stop offset="100%" stopColor="#06b6d4" />
         </linearGradient>
       </defs>
-      <path
-        d="M3 8 L11 4 L21 8 L21 16 L13 20 L3 16 Z"
-        fill="url(#dflow-logo-gradient)"
-        opacity="0.9"
-      />
-      <path
-        d="M7 11 L11 9 L15 11 L15 14 L11 16 L7 14 Z"
-        fill="#fff"
-        opacity="0.9"
-      />
+      <path d="M3 8 L11 4 L21 8 L21 16 L13 20 L3 16 Z" fill="url(#dflow-logo-gradient)" opacity="0.9" />
+      <path d="M7 11 L11 9 L15 11 L15 14 L11 16 L7 14 Z" fill="#fff" opacity="0.9" />
     </svg>
   )
 }
 
-export default function BottomBar() {
-  const [time, setTime] = useState(new Date())
-
+// Isolated ticking clock so the rest of the footer doesn't re-render every second.
+const FooterClock = memo(function FooterClock() {
+  const [time, setTime] = useState(() => new Date())
   useEffect(() => {
-    const interval = setInterval(() => setTime(new Date()), 1000)
-    return () => clearInterval(interval)
+    const id = setInterval(() => setTime(new Date()), 1000)
+    return () => clearInterval(id)
   }, [])
+  return (
+    <span className="flex items-center gap-1" title="Current time">
+      <Clock size={10} />
+      {time.toLocaleTimeString()}
+    </span>
+  )
+})
+
+export default function BottomBar() {
+  const { canInstall, prompt: installPrompt } = useInstallPrompt()
+  const { openLegal } = useLegalModal()
 
   return (
-    <footer className="bg-terminal-surface border-t border-terminal-border px-4 py-2 flex items-center justify-between text-[11px] text-terminal-muted font-mono">
-      <div className="flex items-center gap-4">
+    <footer className="bg-terminal-surface border-t border-terminal-border px-4 py-2 flex items-center justify-between text-[11px] text-terminal-muted font-mono flex-wrap gap-2">
+      <div className="flex items-center gap-3 flex-wrap">
         <span className="flex items-center gap-1">
           <Activity size={10} className="text-terminal-accent" />
           PredictFlow v1.0
@@ -53,15 +58,26 @@ export default function BottomBar() {
           <span className="text-terminal-text font-semibold tracking-wide">DFlow</span>
         </a>
       </div>
-      <div className="flex items-center gap-4">
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <button onClick={() => openLegal('terms')} className="hover:text-terminal-text transition-colors">Terms</button>
+        <button onClick={() => openLegal('privacy')} className="hover:text-terminal-text transition-colors">Privacy</button>
+        <button onClick={() => openLegal('risk')} className="hover:text-terminal-text transition-colors">Risk</button>
+        {canInstall && (
+          <button
+            onClick={installPrompt}
+            className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded border border-terminal-accent/30 bg-terminal-accent/5 text-terminal-accent hover:bg-terminal-accent/10 transition-colors"
+            title="Install PredictFlow as an app"
+          >
+            <Download size={10} />
+            Install
+          </button>
+        )}
         <span className="hidden sm:flex items-center gap-1" title="Running on Solana devnet">
           <span className="w-1.5 h-1.5 rounded-full bg-terminal-green animate-pulse" />
           Devnet
         </span>
-        <span className="flex items-center gap-1" title="Current time">
-          <Clock size={10} />
-          {time.toLocaleTimeString()}
-        </span>
+        <FooterClock />
       </div>
     </footer>
   )

@@ -3,7 +3,7 @@ import { Wallet, ChevronDown, LogOut, Copy, ExternalLink, Check, X, Download } f
 import { useWallet, WALLETS } from '../hooks/useWallet'
 
 function WalletPickerModal() {
-  const { showPicker, setShowPicker, connectWallet, availableWallets } = useWallet()
+  const { showPicker, setShowPicker, connectWallet, isMobile } = useWallet()
 
   if (!showPicker) return null
 
@@ -23,15 +23,18 @@ function WalletPickerModal() {
         <div className="p-4 space-y-2">
           {WALLETS.map(wallet => {
             const isAvailable = wallet.getProvider() !== null
+            const mobileDeepLinkable = isMobile && (wallet.id === 'phantom' || wallet.id === 'solflare')
+            const subtitle = isAvailable
+              ? 'Detected'
+              : mobileDeepLinkable
+                ? 'Open in mobile app'
+                : 'Not installed'
             return (
               <button
                 key={wallet.id}
                 onClick={() => {
-                  if (isAvailable) {
-                    connectWallet(wallet.id)
-                  } else {
-                    window.open(wallet.downloadUrl, '_blank')
-                  }
+                  // connectWallet handles both injected + mobile-deep-link branches.
+                  connectWallet(wallet.id)
                 }}
                 className="flex items-center gap-3 w-full px-4 py-3 rounded-lg border border-terminal-border hover:border-terminal-accent/50 hover:bg-terminal-card transition-all group"
               >
@@ -55,9 +58,7 @@ function WalletPickerModal() {
                   <p className="text-sm font-medium text-terminal-text group-hover:text-white transition-colors">
                     {wallet.name}
                   </p>
-                  <p className="text-[10px] text-terminal-muted">
-                    {isAvailable ? 'Detected' : 'Not installed'}
-                  </p>
+                  <p className="text-[10px] text-terminal-muted">{subtitle}</p>
                 </div>
                 {isAvailable ? (
                   <div className="w-2 h-2 rounded-full bg-terminal-green" />

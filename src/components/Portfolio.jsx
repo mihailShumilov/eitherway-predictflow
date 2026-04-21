@@ -10,6 +10,7 @@ import { usePortfolio } from '../hooks/usePortfolio'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 import ActiveOrders from './ActiveOrders'
+import Skeleton from './Skeleton'
 
 function daysUntil(iso) {
   if (!iso) return null
@@ -335,14 +336,36 @@ export default function Portfolio() {
           label="Total P&L"
           value={`${pnlPositive ? '+' : ''}$${totalPnl.toFixed(2)}`}
           tone={pnlPositive ? 'text-terminal-green' : pnlNegative ? 'text-terminal-red' : 'text-terminal-text'}
-          sub={totalValue > 0 ? `${((totalPnl / (totalValue - totalPnl || 1)) * 100).toFixed(2)}%` : null}
+          sub={(() => {
+            const costBasis = totalValue - totalPnl
+            if (!(costBasis > 0)) return null
+            const pct = (totalPnl / costBasis) * 100
+            return `${pnlPositive ? '+' : ''}${pct.toFixed(2)}%`
+          })()}
         />
       </div>
 
       {loading && positions.length === 0 ? (
-        <div className="bg-terminal-surface border border-terminal-border rounded-lg p-12 flex flex-col items-center gap-3">
-          <Loader2 size={24} className="text-terminal-accent animate-spin" />
-          <p className="text-sm text-terminal-muted">Scanning wallet for prediction market tokens…</p>
+        <div className="space-y-3">
+          <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
+            <div className="px-4 py-3 border-b border-terminal-border">
+              <Skeleton className="h-3 w-20" />
+            </div>
+            <div className="divide-y divide-terminal-border/50">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="grid grid-cols-6 gap-3 px-4 py-3">
+                  <Skeleton className="h-3 w-full col-span-2" />
+                  <Skeleton className="h-3 w-10" />
+                  <Skeleton className="h-3 w-14 ml-auto" />
+                  <Skeleton className="h-3 w-16 ml-auto" />
+                  <Skeleton className="h-3 w-12 ml-auto" />
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="text-[11px] text-terminal-muted text-center">
+            Scanning wallet for prediction market tokens…
+          </p>
         </div>
       ) : (
         <>

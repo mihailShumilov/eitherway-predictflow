@@ -1,7 +1,9 @@
-import React from 'react'
+import React, { Suspense, lazy } from 'react'
 import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock } from 'lucide-react'
-import { formatDistanceToNow, format } from 'date-fns'
-import CandlestickChart from './CandlestickChart'
+import { formatDistanceToNow } from 'date-fns'
+import { formatMarketCloseFull } from '../lib/dateFormat'
+import { formatCompactNumber } from '../lib/format'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import DepthChart from './DepthChart'
 import OrderBook from './OrderBook'
 import RecentTrades from './RecentTrades'
@@ -9,27 +11,34 @@ import TradePanel from './TradePanel'
 import ActiveOrders from './ActiveOrders'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 
-function formatUsd(num) {
-  if (num >= 1e6) return `${(num / 1e6).toFixed(1)}M`
-  if (num >= 1e3) return `${(num / 1e3).toFixed(0)}K`
-  return `${num.toFixed(0)}`
-}
+// Candlestick chart is the single largest dependency in the detail view.
+const CandlestickChart = lazy(() => import('./CandlestickChart'))
+
+const formatUsd = formatCompactNumber
 
 export default function MarketDetail({ market, onClose }) {
   const { activeOrdersForMarket } = useConditionalOrders()
+  const containerRef = useFocusTrap(!!market, onClose)
   if (!market) return null
 
   const orderLines = activeOrdersForMarket(market.id)
   const timeLeft = formatDistanceToNow(new Date(market.closeTime), { addSuffix: true })
-  const closeDate = format(new Date(market.closeTime), 'MMM d, yyyy HH:mm')
+  const closeDate = formatMarketCloseFull(market.closeTime)
   const hoursLeft = (new Date(market.closeTime) - Date.now()) / 3600000
   const isClosed = hoursLeft <= 0
   const urgencyColor = hoursLeft < 4 ? 'text-terminal-red' : hoursLeft < 24 ? 'text-terminal-yellow' : 'text-terminal-muted'
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div
+      className="fixed inset-0 z-50 flex"
+      role="dialog"
+      aria-modal="true"
+    >
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative ml-auto w-full max-w-[1400px] bg-terminal-bg overflow-y-auto">
+      <div
+        ref={containerRef}
+        className="relative ml-auto w-full max-w-[1400px] bg-terminal-bg overflow-y-auto"
+      >
         {/* Header */}
         <div className="sticky top-0 z-10 bg-terminal-surface border-b border-terminal-border">
           <div className="px-4 md:px-6 py-4 flex items-start justify-between gap-4">
@@ -113,7 +122,13 @@ export default function MarketDetail({ market, onClose }) {
           <div className="flex flex-col lg:flex-row gap-6">
             {/* Left column — 70% */}
             <div className="lg:w-[70%] space-y-6">
-              <CandlestickChart market={market} orderLines={orderLines} />
+              <Suspense fallback={
+                <div className="bg-terminal-surface border border-terminal-border rounded-lg h-80 flex items-center justify-center text-sm text-terminal-muted">
+                  Loading chart…
+                </div>
+              }>
+                <CandlestickChart market={market} orderLines={orderLines} />
+              </Suspense>
               <ActiveOrders marketId={market.id} />
               <DepthChart market={market} />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

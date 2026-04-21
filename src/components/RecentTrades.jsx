@@ -1,31 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import { ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react'
 import { generateRecentTrades } from '../data/mockDetailData'
+import Skeleton from './Skeleton'
+import { normalizeTrade } from '../lib/normalize'
 
 const DFLOW_BASE = '/api/dflow'
 
 function formatTradeTime(iso) {
   const d = new Date(iso)
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-function normalizeTrade(t, i) {
-  const timeRaw = t.time ?? t.timestamp ?? t.t ?? t.createdAt
-  const timeIso = typeof timeRaw === 'number'
-    ? new Date(timeRaw < 1e12 ? timeRaw * 1000 : timeRaw).toISOString()
-    : (timeRaw ? new Date(timeRaw).toISOString() : new Date().toISOString())
-  const price = parseFloat(t.price ?? t.p ?? 0)
-  const amount = parseFloat(t.amount ?? t.size ?? t.qty ?? 0)
-  const sideRaw = (t.side ?? t.direction ?? '').toString().toLowerCase()
-  const side = sideRaw === 'sell' || sideRaw === 'ask' ? 'sell' : 'buy'
-  return {
-    id: t.id || `trade-${timeIso}-${i}`,
-    time: timeIso,
-    side,
-    price: Math.round(price * 1000) / 1000,
-    amount: Math.floor(amount),
-    total: Math.round(price * amount * 100) / 100,
-  }
 }
 
 export default function RecentTrades({ market }) {
@@ -43,7 +26,7 @@ export default function RecentTrades({ market }) {
         const data = await res.json()
         const raw = Array.isArray(data) ? data : (data.data || data.trades || [])
         if (!raw.length) throw new Error('Empty trades')
-        const mapped = raw.map(normalizeTrade).slice(0, 20)
+        const mapped = raw.map(normalizeTrade).filter(Boolean).slice(0, 20)
         if (!cancelled) setTrades(mapped)
       } catch {
         if (!cancelled) setTrades(generateRecentTrades(market.yesAsk, 20))
@@ -101,6 +84,18 @@ export default function RecentTrades({ market }) {
       </div>
 
       <div className="max-h-72 overflow-y-auto divide-y divide-terminal-border/50">
+        {trades.length === 0 && (
+          <div className="divide-y divide-terminal-border/50">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="grid grid-cols-4 gap-2 px-4 py-1.5">
+                <Skeleton className="h-3 w-16" />
+                <Skeleton className="h-3 w-12" />
+                <Skeleton className="h-3 w-14 ml-auto" />
+                <Skeleton className="h-3 w-14 ml-auto" />
+              </div>
+            ))}
+          </div>
+        )}
         {trades.map((trade, i) => (
           <div
             key={trade.id}

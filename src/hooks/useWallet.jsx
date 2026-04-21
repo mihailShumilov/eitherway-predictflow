@@ -1,6 +1,35 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react'
 
-const WalletContext = createContext(null)
+export const WalletContext = createContext(null)
+
+// Crude, sufficient for routing logic: is the current browser a mobile one?
+// We only use this to switch from "open installer" to "open wallet's
+// universal link" — false positives just send the user to the download page.
+function isMobileDevice() {
+  if (typeof navigator === 'undefined') return false
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+}
+
+// Phantom and Solflare both expose a deep-link that instructs their mobile
+// app to open a target URL inside their in-app browser, where `window.solana`
+// / `window.solflare` are injected. We hand them the current page so the user
+// lands back here and the normal injected-provider flow takes over.
+//
+// Backpack mobile does not have a public equivalent yet — fall back to the
+// download URL. If the spec lands we can slot it in alongside the others.
+function mobileDeepLink(walletId) {
+  if (typeof window === 'undefined') return null
+  const here = encodeURIComponent(window.location.href)
+  const ref = encodeURIComponent(window.location.origin)
+  switch (walletId) {
+    case 'phantom':
+      return `https://phantom.app/ul/browse/${here}?ref=${ref}`
+    case 'solflare':
+      return `https://solflare.com/ul/v1/browse/${here}?ref=${ref}`
+    default:
+      return null
+  }
+}
 
 export const WALLETS = [
   {
@@ -17,6 +46,15 @@ export const WALLETS = [
     getProvider: () => window.solflare?.isSolflare ? window.solflare : null,
     downloadUrl: 'https://solflare.com/download',
   },
+  {
+    id: 'backpack',
+    name: 'Backpack',
+    icon: 'https://backpack.app/favicon.ico',
+    getProvider: () => window.backpack?.isBackpack
+      ? window.backpack
+      : (window.xnft?.solana || null),
+    downloadUrl: 'https://backpack.app/downloads',
+  },
 ]
 
 export function WalletProvider({ children }) {
@@ -26,8 +64,10 @@ export function WalletProvider({ children }) {
   const [activeWalletId, setActiveWalletId] = useState(null)
   const [showPicker, setShowPicker] = useState(false)
   const [availableWallets, setAvailableWallets] = useState([])
+  const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
+    setIsMobile(isMobileDevice())
     const check = () => {
       const hasSolflare = !!window.solflare?.isSolflare
       const hasPhantom = !!window.solana?.isPhantom
@@ -57,7 +97,12 @@ export function WalletProvider({ children }) {
 
       const provider = wallet.getProvider()
       if (!provider) {
-        window.open(wallet.downloadUrl, '_blank')
+        // On mobile, prefer wallet deep-link over download so the user can
+        // complete the connect flow in a single tap.
+        const deep = isMobileDevice() ? mobileDeepLink(walletId) : null
+        const target = deep || wallet.downloadUrl
+        // eslint-disable-next-line no-restricted-globals
+        window.location.href = target
         setConnecting(false)
         return
       }
@@ -128,6 +173,7 @@ export function WalletProvider({ children }) {
       showPicker,
       setShowPicker,
       availableWallets,
+      isMobile,
     }}>
       {children}
     </WalletContext.Provider>

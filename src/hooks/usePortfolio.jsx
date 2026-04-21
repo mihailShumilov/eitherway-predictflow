@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useWallet } from './useWallet'
+import { DFLOW_PROXY_BASE, SPL_TOKEN_PROGRAM, SOLANA_RPC_ENDPOINTS } from '../config/env'
+import { fetchWithRetry } from '../lib/http'
+import { reportError } from '../lib/errorReporter'
+import { normalizeMarket } from '../lib/normalize'
 
-const DFLOW_BASE = '/api/dflow'
-const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-// Devnet first (matches BottomBar + DFlow dev endpoint). Mainnet is a secondary probe.
-const SOLANA_RPCS = [
-  'https://api.devnet.solana.com',
-  'https://api.mainnet-beta.solana.com',
-]
+const DFLOW_BASE = DFLOW_PROXY_BASE
+const SOLANA_RPCS = SOLANA_RPC_ENDPOINTS
 
 async function rpcCall(url, method, params) {
   const res = await fetch(url, {
@@ -54,37 +53,6 @@ function parseOutcomeMints(payload) {
     }
   }
   return index
-}
-
-// market/by-mint payload normalization — probe for common field names.
-function normalizeMarket(payload, mint) {
-  if (!payload || typeof payload !== 'object') return null
-  const m = payload.market || payload.data || payload
-  const event = payload.event || m.event || {}
-
-  const yesMint = m.yesMint || m.yes_mint || m.yesTokenMint || null
-  const noMint = m.noMint || m.no_mint || m.noTokenMint || null
-  let side = null
-  if (yesMint && yesMint === mint) side = 'yes'
-  else if (noMint && noMint === mint) side = 'no'
-  else if (m.side) side = m.side.toLowerCase() === 'no' ? 'no' : 'yes'
-
-  const yesAsk = parseFloat(m.yesAsk ?? m.yes_ask ?? m.yesPrice ?? 0.5)
-  const noAsk = parseFloat(m.noAsk ?? m.no_ask ?? m.noPrice ?? 0.5)
-  const currentPrice = side === 'no' ? noAsk : yesAsk
-
-  return {
-    marketId: m.id || m.marketId || m.market_id || null,
-    ticker: m.ticker || m.marketTicker || m.market_ticker || null,
-    question: m.question || m.title || m.name || 'Market',
-    eventTitle: event.title || event.name || m.eventTitle || '',
-    category: m.category || event.category || 'Other',
-    closeTime: m.closeTime || m.close_time || event.closeTime || event.close_time || null,
-    side: side || 'yes',
-    currentPrice: Number.isFinite(currentPrice) ? currentPrice : 0.5,
-    yesMint,
-    noMint,
-  }
 }
 
 // Match a wallet-held outcome token back to the user's filled positions in localStorage
@@ -154,7 +122,7 @@ export function usePortfolio() {
     try {
       const [tokenAccounts, outcomeRaw] = await Promise.all([
         getTokenAccounts(address),
-        fetch(`${DFLOW_BASE}/api/v1/outcome_mints`).then(r => {
+        fetchWithRetry(`${DFLOW_BASE}/api/v1/outcome_mints`).then(r => {
           if (!r.ok) throw new Error(`outcome_mints ${r.status}`)
           return r.json()
         }),
@@ -180,7 +148,7 @@ export function usePortfolio() {
 
       const resolved = await Promise.all(held.map(async ({ mint, amount }) => {
         try {
-          const res = await fetch(`${DFLOW_BASE}/api/v1/market/by-mint/${encodeURIComponent(mint)}`)
+          const res = await fetchWithRetry(`${DFLOW_BASE}/api/v1/market/by-mint/${encodeURIComponent(mint)}`)
           if (!res.ok) throw new Error(`by-mint ${res.status}`)
           const payload = await res.json()
           const m = normalizeMarket(payload, mint)
@@ -222,6 +190,7 @@ export function usePortfolio() {
       }
     } catch (err) {
       // Wallet RPC or outcome_mints unreachable — fall back to localStorage
+      reportError(err, { context: 'usePortfolio' })
       setError(err.message || 'Portfolio fetch failed')
       setPositions(buildPositionsFromLocal(localPositions))
       setSource('local')

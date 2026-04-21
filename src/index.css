@@ -2,19 +2,53 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Single source of truth for the palette.
+ *
+ * Values are space-separated R G B triplets so Tailwind's
+ * `rgb(var(--x) / <alpha-value>)` pattern can compose them with opacity
+ * modifiers like `bg-terminal-green/20`. Canvas chart code reads the
+ * `--terminal-*-hex` companion vars via getComputedStyle so re-theming the
+ * palette never requires touching chart source. */
+:root {
+  --terminal-bg: 8 12 22;
+  --terminal-surface: 15 20 35;
+  --terminal-card: 20 26 46;
+  --terminal-border: 30 39 64;
+  --terminal-highlight: 28 37 68;
+  --terminal-text: 226 232 240;
+  --terminal-muted: 100 116 139;
+  --terminal-accent: 59 130 246;
+  --terminal-green: 16 185 129;
+  --terminal-red: 239 68 68;
+  --terminal-yellow: 245 158 11;
+  --terminal-cyan: 6 182 212;
+
+  /* Hex mirrors consumed by canvas rendering (cannot use rgb() vars directly). */
+  --terminal-bg-hex: #080c16;
+  --terminal-surface-hex: #0f1423;
+  --terminal-card-hex: #141a2e;
+  --terminal-border-hex: #1e2740;
+  --terminal-text-hex: #e2e8f0;
+  --terminal-muted-hex: #64748b;
+  --terminal-accent-hex: #3b82f6;
+  --terminal-green-hex: #10b981;
+  --terminal-red-hex: #ef4444;
+  --terminal-yellow-hex: #f59e0b;
+}
+
 @layer base {
   * {
     scrollbar-width: thin;
-    scrollbar-color: #1e2740 #080c16;
+    scrollbar-color: var(--terminal-border-hex) var(--terminal-bg-hex);
   }
   *::-webkit-scrollbar {
     width: 6px;
   }
   *::-webkit-scrollbar-track {
-    background: #080c16;
+    background: var(--terminal-bg-hex);
   }
   *::-webkit-scrollbar-thumb {
-    background: #1e2740;
+    background: var(--terminal-border-hex);
     border-radius: 3px;
   }
 }

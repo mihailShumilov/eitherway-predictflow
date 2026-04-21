@@ -1,22 +1,55 @@
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react'
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react'
+import { DFLOW_WS_URL } from '../config/env'
 
 // Best-effort live-price feed. Tries the DFlow WebSocket first; if the
 // connection can't be established or stays silent we silently fall back
 // to no-op mode. Consumers still get a flash when the upstream Markets
 // provider refreshes and price values change — see usePriceFlash.
-const WS_URL = 'wss://api.prod.dflow.net/ws'
+const WS_URL = DFLOW_WS_URL
 const PING_INTERVAL = 25000
-const RECONNECT_DELAY = 5000
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 60000
+const MAX_CONSECUTIVE_FAILURES = 10
+const FLASH_DURATION_MS = 500
 
+// ─── Module-level flash store ────────────────────────────────────────
+// Kept out of React state/context so subscribing to one market doesn't
+// re-render components watching a different market.
+const flashState = new Map()               // marketId -> 'up' | 'down'
+const flashListeners = new Map()           // marketId -> Set<listener>
+const flashTimers = new Map()              // marketId -> timeoutId
+
+function notify(marketId) {
+  const set = flashListeners.get(marketId)
+  if (!set) return
+  for (const l of set) l()
+}
+
+function setFlash(marketId, direction) {
+  flashState.set(marketId, direction)
+  notify(marketId)
+  const prev = flashTimers.get(marketId)
+  if (prev) clearTimeout(prev)
+  const t = setTimeout(() => {
+    flashState.delete(marketId)
+    flashTimers.delete(marketId)
+    notify(marketId)
+  }, FLASH_DURATION_MS)
+  flashTimers.set(marketId, t)
+}
+
+export function reportPriceDelta(marketId, oldVal, newVal) {
+  if (oldVal == null || newVal == null || oldVal === newVal) return
+  setFlash(marketId, newVal > oldVal ? 'up' : 'down')
+}
+
+// ─── WebSocket live feed (kept in React for connection lifecycle) ────
 const LivePricesContext = createContext(null)
 
 function parseMessage(evt) {
   try {
     if (typeof evt.data !== 'string') return null
     const msg = JSON.parse(evt.data)
-    // Accept a few shapes the server might use. We look for something
-    // that identifies a market and a price. If nothing matches we drop
-    // the message.
     const marketId = msg.marketId || msg.market_id || msg.market || msg.id
     const yesAsk = msg.yesAsk ?? msg.yes_ask ?? msg.yesPrice ?? msg.yes_price
     const noAsk = msg.noAsk ?? msg.no_ask ?? msg.noPrice ?? msg.no_price
@@ -33,65 +66,52 @@ function parseMessage(evt) {
 
 export function LivePricesProvider({ children }) {
   const [prices, setPrices] = useState({})
-  const [flashes, setFlashes] = useState({})
   const [connected, setConnected] = useState(false)
   const wsRef = useRef(null)
   const reconnectRef = useRef(null)
   const subscriptionsRef = useRef(new Set())
-  const flashTimers = useRef(new Map())
-
-  const flash = useCallback((marketId, direction) => {
-    setFlashes(prev => ({ ...prev, [marketId]: direction }))
-    const existing = flashTimers.current.get(marketId)
-    if (existing) clearTimeout(existing)
-    const t = setTimeout(() => {
-      setFlashes(prev => {
-        const { [marketId]: _, ...rest } = prev
-        return rest
-      })
-      flashTimers.current.delete(marketId)
-    }, 500)
-    flashTimers.current.set(marketId, t)
-  }, [])
 
   const applyUpdate = useCallback((update) => {
     setPrices(prev => {
       const existing = prev[update.marketId] || {}
       const next = { ...existing }
-      let direction = null
       if (update.yesAsk != null) {
-        if (existing.yesAsk != null && update.yesAsk !== existing.yesAsk) {
-          direction = update.yesAsk > existing.yesAsk ? 'up' : 'down'
-        }
+        reportPriceDelta(update.marketId, existing.yesAsk, update.yesAsk)
         next.yesAsk = update.yesAsk
       }
       if (update.noAsk != null) {
-        if (existing.noAsk != null && update.noAsk !== existing.noAsk) {
-          direction = update.noAsk > existing.noAsk ? 'up' : 'down'
-        }
+        reportPriceDelta(update.marketId, existing.noAsk, update.noAsk)
         next.noAsk = update.noAsk
       }
-      if (direction) flash(update.marketId, direction)
       return { ...prev, [update.marketId]: next }
     })
-  }, [flash])
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     let pingTimer = null
+    let failures = 0
+    let circuitOpen = false
+
+    const nextBackoffMs = () => Math.min(RECONNECT_BASE_MS * Math.pow(2, failures), RECONNECT_MAX_MS)
 
     const connect = () => {
-      if (cancelled) return
+      if (cancelled || circuitOpen) return
+      if (!WS_URL) return
       let ws
       try {
         ws = new WebSocket(WS_URL)
       } catch {
+        failures++
+        if (failures >= MAX_CONSECUTIVE_FAILURES) { circuitOpen = true; return }
+        reconnectRef.current = setTimeout(connect, nextBackoffMs())
         return
       }
       wsRef.current = ws
 
       ws.addEventListener('open', () => {
         if (cancelled) return
+        failures = 0
         setConnected(true)
         for (const marketId of subscriptionsRef.current) {
           try { ws.send(JSON.stringify({ type: 'subscribe', marketId })) } catch { /* ignore */ }
@@ -109,15 +129,16 @@ export function LivePricesProvider({ children }) {
       const handleClose = () => {
         setConnected(false)
         if (pingTimer) { clearInterval(pingTimer); pingTimer = null }
-        if (!cancelled) {
-          reconnectRef.current = setTimeout(connect, RECONNECT_DELAY)
+        if (cancelled) return
+        failures++
+        if (failures >= MAX_CONSECUTIVE_FAILURES) {
+          circuitOpen = true
+          return
         }
+        reconnectRef.current = setTimeout(connect, nextBackoffMs())
       }
       ws.addEventListener('close', handleClose)
-      ws.addEventListener('error', () => {
-        // The browser already triggers close after an error, so don't reconnect here —
-        // just swallow it to keep the console quiet.
-      })
+      ws.addEventListener('error', () => { /* close follows */ })
     }
 
     connect()
@@ -129,8 +150,9 @@ export function LivePricesProvider({ children }) {
       if (wsRef.current && wsRef.current.readyState <= 1) {
         try { wsRef.current.close() } catch { /* ignore */ }
       }
-      for (const t of flashTimers.current.values()) clearTimeout(t)
-      flashTimers.current.clear()
+      for (const t of flashTimers.values()) clearTimeout(t)
+      flashTimers.clear()
+      flashState.clear()
     }
   }, [applyUpdate])
 
@@ -150,20 +172,8 @@ export function LivePricesProvider({ children }) {
     }
   }, [])
 
-  // Exposed so consumers can drive a flash when the upstream provider
-  // refreshes polled data and prices change.
-  const reportPriceChange = useCallback((marketId, direction) => {
-    if (direction) flash(marketId, direction)
-  }, [flash])
-
   return (
-    <LivePricesContext.Provider value={{
-      prices,
-      flashes,
-      connected,
-      subscribe,
-      reportPriceChange,
-    }}>
+    <LivePricesContext.Provider value={{ prices, connected, subscribe }}>
       {children}
     </LivePricesContext.Provider>
   )
@@ -171,29 +181,35 @@ export function LivePricesProvider({ children }) {
 
 export function useLivePrices() {
   return useContext(LivePricesContext) || {
-    prices: {},
-    flashes: {},
-    connected: false,
-    subscribe: () => () => {},
-    reportPriceChange: () => {},
+    prices: {}, connected: false, subscribe: () => () => {},
   }
 }
 
-// Helper: call in a component to detect price changes between renders
-// of a market prop and trigger a flash animation keyed by marketId.
+// Call this in a component with per-render `yesAsk`/`noAsk` props and
+// get back this market's current flash direction (or null). Only this
+// card re-renders when ITS market flashes.
 export function usePriceFlash(marketId, yesAsk, noAsk) {
-  const { flashes, reportPriceChange } = useLivePrices()
   const prevRef = useRef({ yesAsk, noAsk })
 
   useEffect(() => {
     const prev = prevRef.current
-    if (prev.yesAsk != null && yesAsk != null && yesAsk !== prev.yesAsk) {
-      reportPriceChange(marketId, yesAsk > prev.yesAsk ? 'up' : 'down')
-    } else if (prev.noAsk != null && noAsk != null && noAsk !== prev.noAsk) {
-      reportPriceChange(marketId, noAsk > prev.noAsk ? 'up' : 'down')
-    }
+    reportPriceDelta(marketId, prev.yesAsk, yesAsk)
+    reportPriceDelta(marketId, prev.noAsk, noAsk)
     prevRef.current = { yesAsk, noAsk }
-  }, [marketId, yesAsk, noAsk, reportPriceChange])
+  }, [marketId, yesAsk, noAsk])
 
-  return flashes[marketId] || null
+  return useSyncExternalStore(
+    (listener) => {
+      if (!flashListeners.has(marketId)) flashListeners.set(marketId, new Set())
+      flashListeners.get(marketId).add(listener)
+      return () => {
+        const set = flashListeners.get(marketId)
+        if (!set) return
+        set.delete(listener)
+        if (set.size === 0) flashListeners.delete(marketId)
+      }
+    },
+    () => flashState.get(marketId) || null,
+    () => null,
+  )
 }

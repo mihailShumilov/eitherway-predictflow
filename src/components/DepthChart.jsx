@@ -1,14 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { generateDepthData } from '../data/mockDetailData'
+import { normalizeLevel } from '../lib/normalize'
+import { getChartPalette } from '../lib/palette'
 
 const DFLOW_BASE = '/api/dflow'
-
-function normalizeLevel(level) {
-  const price = parseFloat(level.price ?? level.p ?? level[0])
-  const size = parseFloat(level.size ?? level.qty ?? level.quantity ?? level.amount ?? level[1])
-  return Number.isFinite(price) && Number.isFinite(size) ? { price, size } : null
-}
 
 function withCumulative(levels, { reverse = false } = {}) {
   const sorted = [...levels].sort((a, b) => reverse ? b.price - a.price : a.price - b.price)
@@ -17,21 +12,12 @@ function withCumulative(levels, { reverse = false } = {}) {
   return reverse ? out.reverse() : out
 }
 
-const CustomTooltip = ({ active, payload }) => {
-  if (!active || !payload?.length) return null
-  const d = payload[0]?.payload
-  if (!d) return null
-  return (
-    <div className="bg-terminal-card border border-terminal-border rounded-lg p-2 shadow-xl text-xs font-mono">
-      <div className="text-terminal-muted mb-1">Price: {(d.price * 100).toFixed(1)}¢</div>
-      {d.bidCum > 0 && <div className="text-terminal-green">Bid Depth: {d.bidCum.toLocaleString()}</div>}
-      {d.askCum > 0 && <div className="text-terminal-red">Ask Depth: {d.askCum.toLocaleString()}</div>}
-    </div>
-  )
-}
-
 export default function DepthChart({ market }) {
+  const containerRef = useRef(null)
+  const canvasRef = useRef(null)
+  const [dimensions, setDimensions] = useState({ width: 600, height: 192 })
   const [book, setBook] = useState(null)
+  const [hoverX, setHoverX] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -58,38 +44,171 @@ export default function DepthChart({ market }) {
     return () => { cancelled = true }
   }, [market.id, market.ticker])
 
-  const data = useMemo(() => {
-    const { bids, asks } = book || generateDepthData(market.yesBid, market.yesAsk, 20)
+  useEffect(() => {
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect
+        setDimensions({ width: Math.floor(width), height: Math.max(160, Math.floor(height)) })
+      }
+    })
+    if (containerRef.current) observer.observe(containerRef.current)
+    return () => observer.disconnect()
+  }, [])
 
-    const merged = []
+  const { bids, asks, midPrice, maxSize, minPrice, maxPrice } = useMemo(() => {
+    const resolved = book || generateDepthData(market.yesBid, market.yesAsk, 20)
+    const mid = (market.yesBid + market.yesAsk) / 2
+    const allSizes = [...resolved.bids, ...resolved.asks].map(l => l.cumulative)
+    const maxSize = Math.max(1, ...allSizes)
+    const prices = [...resolved.bids, ...resolved.asks].map(l => l.price)
+    return {
+      bids: resolved.bids,
+      asks: resolved.asks,
+      midPrice: mid,
+      maxSize,
+      minPrice: Math.min(mid, ...prices),
+      maxPrice: Math.max(mid, ...prices),
+    }
+  }, [book, market.yesBid, market.yesAsk])
 
-    // Bids (left side) - reversed so price goes low to high
-    for (const b of bids) {
-      merged.push({
-        price: b.price,
-        bidCum: b.cumulative,
-        askCum: 0,
-      })
+  const padding = { top: 5, right: 40, bottom: 22, left: 10 }
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const palette = getChartPalette()
+    const ctx = canvas.getContext('2d')
+    const dpr = window.devicePixelRatio || 1
+    const { width, height } = dimensions
+
+    canvas.width = width * dpr
+    canvas.height = height * dpr
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.scale(dpr, dpr)
+
+    ctx.fillStyle = palette.surface
+    ctx.fillRect(0, 0, width, height)
+
+    const chartW = width - padding.left - padding.right
+    const chartH = height - padding.top - padding.bottom
+    const span = maxPrice - minPrice || 0.1
+    const toX = (p) => padding.left + ((p - minPrice) / span) * chartW
+    const toY = (size) => padding.top + chartH * (1 - size / maxSize)
+
+    // Y labels (size)
+    ctx.fillStyle = palette.muted
+    ctx.font = '10px JetBrains Mono, monospace'
+    ctx.textAlign = 'left'
+    const yLabels = 3
+    for (let i = 0; i <= yLabels; i++) {
+      const frac = i / yLabels
+      const size = maxSize * (1 - frac)
+      const y = padding.top + chartH * frac
+      const txt = size >= 1000 ? `${(size / 1000).toFixed(0)}K` : Math.round(size).toString()
+      ctx.fillText(txt, width - padding.right + 5, y + 3)
     }
 
-    // Mid-point
-    const midPrice = (market.yesBid + market.yesAsk) / 2
-    merged.push({ price: midPrice, bidCum: 0, askCum: 0 })
+    // X labels
+    ctx.textAlign = 'center'
+    ctx.fillText(`${(minPrice * 100).toFixed(0)}¢`, toX(minPrice), height - 5)
+    ctx.fillText(`${(midPrice * 100).toFixed(0)}¢`, toX(midPrice), height - 5)
+    ctx.fillText(`${(maxPrice * 100).toFixed(0)}¢`, toX(maxPrice), height - 5)
 
-    // Asks (right side)
-    for (const a of asks) {
-      merged.push({
-        price: a.price,
-        bidCum: 0,
-        askCum: a.cumulative,
-      })
+    // Step area for bids/asks
+    const drawSide = (levels, colorHex, direction) => {
+      if (!levels.length) return
+      // Step-after path from each level to the next price.
+      ctx.beginPath()
+      const baseY = padding.top + chartH
+      const sorted = [...levels].sort((a, b) => a.price - b.price)
+      const first = sorted[0]
+      ctx.moveTo(toX(first.price), baseY)
+      ctx.lineTo(toX(first.price), toY(first.cumulative))
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1]
+        const cur = sorted[i]
+        ctx.lineTo(toX(cur.price), toY(prev.cumulative))
+        ctx.lineTo(toX(cur.price), toY(cur.cumulative))
+      }
+      const last = sorted[sorted.length - 1]
+      const endX = direction === 'bid' ? toX(midPrice) : toX(last.price)
+      ctx.lineTo(endX, toY(last.cumulative))
+      ctx.lineTo(endX, baseY)
+      ctx.closePath()
+
+      const grad = ctx.createLinearGradient(0, padding.top, 0, baseY)
+      grad.addColorStop(0, hexAlpha(colorHex, 0.4))
+      grad.addColorStop(1, hexAlpha(colorHex, 0.05))
+      ctx.fillStyle = grad
+      ctx.fill()
+
+      // Outline (step-after)
+      ctx.beginPath()
+      ctx.moveTo(toX(first.price), toY(first.cumulative))
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1]
+        const cur = sorted[i]
+        ctx.lineTo(toX(cur.price), toY(prev.cumulative))
+        ctx.lineTo(toX(cur.price), toY(cur.cumulative))
+      }
+      ctx.strokeStyle = colorHex
+      ctx.lineWidth = 1.5
+      ctx.stroke()
     }
 
-    merged.sort((a, b) => a.price - b.price)
-    return merged
-  }, [book, market.id, market.yesBid, market.yesAsk])
+    drawSide(bids, palette.green, 'bid')
+    drawSide(asks, palette.red, 'ask')
 
-  const midPrice = (market.yesBid + market.yesAsk) / 2
+    // Mid line
+    ctx.strokeStyle = palette.accent
+    ctx.setLineDash([3, 3])
+    ctx.beginPath()
+    ctx.moveTo(toX(midPrice), padding.top)
+    ctx.lineTo(toX(midPrice), padding.top + chartH)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // Hover
+    if (hoverX !== null) {
+      const priceAt = minPrice + ((hoverX - padding.left) / chartW) * span
+      ctx.strokeStyle = hexAlpha(palette.text, 0.18)
+      ctx.lineWidth = 0.5
+      ctx.setLineDash([3, 3])
+      ctx.beginPath()
+      ctx.moveTo(toX(priceAt), padding.top)
+      ctx.lineTo(toX(priceAt), padding.top + chartH)
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+  }, [bids, asks, midPrice, maxSize, minPrice, maxPrice, dimensions, hoverX])
+
+  useEffect(() => { draw() }, [draw])
+
+  const handleMouseMove = useCallback((e) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setHoverX(e.clientX - rect.left)
+  }, [])
+
+  const priceAtHover = useMemo(() => {
+    if (hoverX === null) return null
+    const chartW = dimensions.width - padding.left - padding.right
+    const span = maxPrice - minPrice || 0.1
+    return minPrice + ((hoverX - padding.left) / chartW) * span
+  }, [hoverX, dimensions.width, maxPrice, minPrice])
+
+  const hoverInfo = useMemo(() => {
+    if (priceAtHover === null) return null
+    const bid = [...bids].reverse().find(b => b.price <= priceAtHover)
+    const ask = asks.find(a => a.price >= priceAtHover)
+    return {
+      price: priceAtHover,
+      bidCum: bid?.cumulative || 0,
+      askCum: ask?.cumulative || 0,
+    }
+  }, [priceAtHover, bids, asks])
 
   return (
     <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
@@ -108,59 +227,29 @@ export default function DepthChart({ market }) {
           </span>
         </div>
       </div>
-      <div className="p-2 h-48">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-            <defs>
-              <linearGradient id="bidGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="#10b981" stopOpacity={0.05} />
-              </linearGradient>
-              <linearGradient id="askGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#ef4444" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="#ef4444" stopOpacity={0.05} />
-              </linearGradient>
-            </defs>
-            <XAxis
-              dataKey="price"
-              tick={{ fontSize: 10, fill: '#64748b' }}
-              tickLine={false}
-              axisLine={false}
-              tickFormatter={(v) => `${(v * 100).toFixed(0)}¢`}
-            />
-            <YAxis
-              tick={{ fontSize: 10, fill: '#64748b' }}
-              tickLine={false}
-              axisLine={false}
-              tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v}
-              width={40}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <ReferenceLine
-              x={midPrice}
-              stroke="#3b82f6"
-              strokeDasharray="3 3"
-              strokeWidth={1}
-            />
-            <Area
-              type="stepAfter"
-              dataKey="bidCum"
-              stroke="#10b981"
-              strokeWidth={1.5}
-              fill="url(#bidGrad)"
-              dot={false}
-            />
-            <Area
-              type="stepAfter"
-              dataKey="askCum"
-              stroke="#ef4444"
-              strokeWidth={1.5}
-              fill="url(#askGrad)"
-              dot={false}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+      <div ref={containerRef} className="h-48 relative">
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full cursor-crosshair"
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setHoverX(null)}
+        />
+        {hoverInfo && (hoverInfo.bidCum > 0 || hoverInfo.askCum > 0) && (
+          <div className="absolute top-1 left-2 bg-terminal-card/90 border border-terminal-border rounded p-1.5 text-[10px] font-mono space-y-0.5 pointer-events-none">
+            <div className="text-terminal-muted">Price: {(hoverInfo.price * 100).toFixed(1)}¢</div>
+            {hoverInfo.bidCum > 0 && <div className="text-terminal-green">Bid Depth: {hoverInfo.bidCum.toLocaleString()}</div>}
+            {hoverInfo.askCum > 0 && <div className="text-terminal-red">Ask Depth: {hoverInfo.askCum.toLocaleString()}</div>}
+          </div>
+        )}
       </div>
     </div>
   )
+}
+
+function hexAlpha(hex, alpha) {
+  if (!hex || hex[0] !== '#' || hex.length !== 7) return hex
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }

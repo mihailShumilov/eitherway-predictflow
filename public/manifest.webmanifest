@@ -1,0 +1,28 @@
+{
+  "name": "PredictFlow — Prediction Market Trading Terminal",
+  "short_name": "PredictFlow",
+  "description": "The first conditional trading terminal for prediction markets on Solana.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080c16",
+  "theme_color": "#080c16",
+  "orientation": "any",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/og-image.svg",
+      "sizes": "1200x630",
+      "type": "image/svg+xml",
+      "form_factor": "wide",
+      "label": "PredictFlow trading terminal"
+    }
+  ]
+}

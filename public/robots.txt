@@ -1,0 +1,6 @@
+User-agent: *
+# Gate crawling until a public marketing surface exists. Regulated
+# fintech + KYC-gated pages should not appear in search results.
+Disallow: /
+
+Sitemap: /sitemap.xml
