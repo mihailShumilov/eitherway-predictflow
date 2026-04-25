@@ -39,6 +39,21 @@ export default function ResultBanner({ result }) {
         {!result.success && result.error && (
           <p className="text-terminal-muted mt-0.5">{result.error}</p>
         )}
+        {!result.success && result.details && (
+          <p className="text-terminal-muted/80 mt-1 text-[11px] font-mono break-all">
+            {result.details}
+          </p>
+        )}
+        {!result.success && Array.isArray(result.logs) && result.logs.length > 0 && (
+          <details className="mt-1.5">
+            <summary className="cursor-pointer text-terminal-muted/80 text-[11px] hover:text-terminal-muted">
+              Show simulation logs ({result.logs.length})
+            </summary>
+            <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[10px] font-mono text-terminal-muted/70 bg-terminal-red/5 border border-terminal-red/20 rounded p-2">
+              {result.logs.join('\n')}
+            </pre>
+          </details>
+        )}
       </div>
     </div>
   )

@@ -14,6 +14,7 @@ import { reportError } from '../lib/errorReporter'
 import { track } from '../lib/analytics'
 import { safeErrorMessage } from '../lib/errorMessage'
 import { classifyOrderResponse, isGateRejection } from '../lib/dflowErrors'
+import { formatSimulationError } from '../lib/simulationErrors'
 import { appendPosition } from '../lib/storage'
 
 function getRealMint(market, side) {
@@ -162,9 +163,19 @@ export function useTradeSubmit(market) {
 
         const pf = await preflightTransaction(txBytes)
         if (!pf.ok) {
-          throw new Error(pf.unreachable
-            ? 'Could not verify order with Solana RPC. Please try again.'
-            : `Simulation failed: ${pf.error}`)
+          if (pf.unreachable) {
+            throw new Error('Could not verify order with Solana RPC. Please try again.')
+          }
+          const formatted = formatSimulationError({
+            error: pf.error,
+            logs: pf.logs,
+            summary: whitelist.summary,
+          })
+          const err = new Error(formatted.message)
+          err.simDetails = formatted.details
+          err.simLogs = formatted.logs
+          err.simRaw = pf.error
+          throw err
         }
 
         if (typeof provider.signAndSendTransaction === 'function') {
@@ -222,7 +233,13 @@ export function useTradeSubmit(market) {
       if (isGateRejection({ kind: err.kind })) {
         showModalWithReason(message)
       }
-      setResult({ success: false, error: message })
+      setResult({
+        success: false,
+        error: message,
+        details: err.simDetails || null,
+        logs: err.simLogs || null,
+        raw: err.simRaw || null,
+      })
     } finally {
       submissionLocks.delete(nonce)
       setSubmitting(false)
