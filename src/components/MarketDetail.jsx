@@ -1,5 +1,5 @@
-import React, { Suspense, lazy } from 'react'
-import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock } from 'lucide-react'
+import React, { Suspense, lazy, useState } from 'react'
+import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock, Share2, Check } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { formatMarketCloseFull } from '../lib/dateFormat'
 import { formatCompactNumber } from '../lib/format'
@@ -19,9 +19,26 @@ const formatUsd = formatCompactNumber
 export default function MarketDetail({ market, onClose }) {
   const { activeOrdersForMarket } = useConditionalOrders()
   const containerRef = useFocusTrap(!!market, onClose)
+  const [copied, setCopied] = useState(false)
   if (!market) return null
 
   const orderLines = activeOrdersForMarket(market.id)
+
+  const handleShare = async () => {
+    if (typeof window === 'undefined') return
+    const url = window.location.href
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: market.question, url })
+        return
+      }
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // User dismissed share sheet, or clipboard blocked — silent.
+    }
+  }
   const timeLeft = formatDistanceToNow(new Date(market.closeTime), { addSuffix: true })
   const closeDate = formatMarketCloseFull(market.closeTime)
   const hoursLeft = (new Date(market.closeTime) - Date.now()) / 3600000
@@ -86,12 +103,23 @@ export default function MarketDetail({ market, onClose }) {
                 )}
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="p-2 rounded-lg text-terminal-muted hover:text-white hover:bg-terminal-highlight transition-all shrink-0"
-            >
-              <X size={20} />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={handleShare}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-terminal-muted hover:text-white hover:bg-terminal-highlight transition-all"
+                title="Copy shareable link"
+                aria-label="Share market link"
+              >
+                {copied ? <Check size={14} className="text-terminal-green" /> : <Share2 size={14} />}
+                <span className="hidden sm:inline">{copied ? 'Copied' : 'Share'}</span>
+              </button>
+              <button
+                onClick={onClose}
+                className="p-2 rounded-lg text-terminal-muted hover:text-white hover:bg-terminal-highlight transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
           </div>
 
           {/* Price bar */}

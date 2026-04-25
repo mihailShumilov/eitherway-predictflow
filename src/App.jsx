@@ -1,5 +1,6 @@
-import React, { useState, Suspense, lazy } from 'react'
+import React, { useMemo, Suspense, lazy } from 'react'
 import { MarketsProvider, useMarkets } from './hooks/useMarkets'
+import { useRoute } from './hooks/useRoute'
 import { WalletProvider } from './hooks/useWallet'
 import { OrdersProvider, useConditionalOrders } from './hooks/useConditionalOrders'
 import { DCAProvider, useDCA } from './hooks/useDCA'
@@ -80,20 +81,34 @@ function OrderNotifications() {
 }
 
 function AppLayout() {
-  const [selectedMarket, setSelectedMarket] = useState(null)
-  const [page, setPage] = useState('explore')
+  const { allMarkets } = useMarkets()
+  const { page, marketTicker, side, navigate } = useRoute()
+
+  const selectedMarket = useMemo(() => {
+    if (!marketTicker) return null
+    const found = allMarkets.find(m => m.ticker === marketTicker)
+    if (!found) return null
+    return side ? { ...found, side } : found
+  }, [allMarkets, marketTicker, side])
+
+  const handleSelectMarket = (m) => {
+    if (!m?.ticker) return
+    navigate({ marketTicker: m.ticker, side: m.side })
+  }
+  const handleCloseMarket = () => navigate({ page })
+  const handlePageChange = (p) => navigate({ page: p })
 
   return (
     <div className="min-h-screen bg-terminal-bg text-terminal-text flex flex-col">
       <OrderNotifications />
       <KycModal />
-      <Header page={page} onPageChange={setPage} />
+      <Header page={page} onPageChange={handlePageChange} />
       <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4 max-w-screen-2xl mx-auto w-full">
         {page === 'explore' ? (
           <>
             <CategorySidebar />
             <main className="flex-1 min-w-0 space-y-6">
-              <MarketGrid onSelectMarket={setSelectedMarket} />
+              <MarketGrid onSelectMarket={handleSelectMarket} />
               <Positions />
             </main>
           </>
@@ -110,7 +125,7 @@ function AppLayout() {
         <Suspense fallback={null}>
           <MarketDetail
             market={selectedMarket}
-            onClose={() => setSelectedMarket(null)}
+            onClose={handleCloseMarket}
           />
         </Suspense>
       )}
