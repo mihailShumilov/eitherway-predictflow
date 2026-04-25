@@ -1,23 +1,48 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { generateCandlesticks } from '../data/mockDetailData'
-import { normalizeCandle } from '../lib/normalize'
 import { getChartPalette } from '../lib/palette'
 
 const DFLOW_BASE = '/api/dflow'
 
+// DFlow's prod candlesticks endpoint accepts periodInterval in minutes:
+// only 1, 60, or 1440 are valid. `count` is the number of candles per
+// chart, used to compute the startTs window.
 const RESOLUTIONS = [
-  { key: '1h', label: '1H', count: 48 },
-  { key: '4h', label: '4H', count: 42 },
-  { key: '1d', label: '1D', count: 30 },
-  { key: '1w', label: '1W', count: 20 },
+  { key: '1h', label: '1H', count: 48, periodInterval: 60 },
+  { key: '1d', label: '1D', count: 30, periodInterval: 1440 },
 ]
 
 function formatTime(ts, resolution) {
   const d = new Date(ts)
-  if (resolution === '1h' || resolution === '4h') {
+  if (resolution === '1h') {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+
+// DFlow returns `{ end_period_ts, yes_ask: {open,high,low,close, *_dollars}, … }`.
+// The chart wants `{ time(ms), open, high, low, close, volume }` with prices
+// in 0.0–1.0 probability space. We pick `yes_ask` to mirror the rest of the
+// UI which prices off `market.yesAsk`.
+function mapDflowCandle(c) {
+  if (!c || typeof c !== 'object') return null
+  const ts = Number(c.end_period_ts)
+  if (!Number.isFinite(ts)) return null
+  const ask = c.yes_ask
+  if (!ask) return null
+  const open = parseFloat(ask.open_dollars ?? ask.open / 100)
+  const high = parseFloat(ask.high_dollars ?? ask.high / 100)
+  const low = parseFloat(ask.low_dollars ?? ask.low / 100)
+  const close = parseFloat(ask.close_dollars ?? ask.close / 100)
+  if (!Number.isFinite(open) || !Number.isFinite(close)) return null
+  return {
+    time: ts * 1000,
+    open,
+    high: Number.isFinite(high) ? high : Math.max(open, close),
+    low: Number.isFinite(low) ? low : Math.min(open, close),
+    close,
+    volume: parseFloat(c.volume_fp ?? c.volume ?? 0) || 0,
+  }
 }
 
 export default function CandlestickChart({ market, orderLines = [] }) {
@@ -36,12 +61,17 @@ export default function CandlestickChart({ market, orderLines = [] }) {
     const ticker = market.ticker || market.id
     async function load() {
       try {
-        const res = await fetch(`${DFLOW_BASE}/api/v1/market/${encodeURIComponent(ticker)}/candlesticks?resolution=${resolution}`)
+        const endTs = Math.floor(Date.now() / 1000)
+        const startTs = endTs - resConfig.count * resConfig.periodInterval * 60
+        const url = `${DFLOW_BASE}/api/v1/market/${encodeURIComponent(ticker)}/candlesticks`
+          + `?periodInterval=${resConfig.periodInterval}`
+          + `&startTs=${startTs}&endTs=${endTs}`
+        const res = await fetch(url)
         if (!res.ok) throw new Error(`Candlesticks API: ${res.status}`)
         const data = await res.json()
-        const raw = Array.isArray(data) ? data : (data.data || data.candles || data.candlesticks || [])
+        const raw = Array.isArray(data) ? data : (data.candlesticks || data.data || data.candles || [])
         if (!raw.length) throw new Error('Empty candle response')
-        const mapped = raw.map(normalizeCandle).filter(Boolean)
+        const mapped = raw.map(mapDflowCandle).filter(Boolean)
         if (!mapped.length) throw new Error('No valid candles')
         if (!cancelled) {
           setCandles(mapped)
@@ -56,7 +86,7 @@ export default function CandlestickChart({ market, orderLines = [] }) {
     }
     load()
     return () => { cancelled = true }
-  }, [market.id, market.ticker, market.yesAsk, resolution, resConfig.count])
+  }, [market.id, market.ticker, market.yesAsk, resolution, resConfig.count, resConfig.periodInterval])
 
   const padding = { top: 20, right: 60, bottom: 30, left: 10 }
 
