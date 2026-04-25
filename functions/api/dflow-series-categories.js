@@ -3,7 +3,10 @@
 // only seriesTicker, so the sidebar joins through this map. Cached at the
 // edge so the heavy upstream fetch happens at most once per hour per POP.
 
-const CACHE_URL = 'https://predictflow.local/_cache/dflow-series-categories.json'
+// Version the cache key so shape-breaking changes invalidate cleanly across
+// PoPs without waiting for the TTL. Bump when the response shape changes.
+const CACHE_VERSION = 'v2'
+const CACHE_URL = `https://predictflow.local/_cache/dflow-series-categories.${CACHE_VERSION}.json`
 const CACHE_TTL = 3600
 
 export async function onRequest({ request, env }) {
