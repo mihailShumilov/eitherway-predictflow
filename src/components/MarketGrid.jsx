@@ -21,15 +21,22 @@ export default function MarketGrid({ onSelectMarket }) {
     )
   }
 
-  if (error && usingMockData && markets.length === 0) {
+  if (error && markets.length === 0) {
+    const isHardError = !usingMockData
     return (
       <div className="flex flex-col items-center justify-center py-20 px-4">
-        <div className="w-12 h-12 rounded-full bg-terminal-yellow/10 border border-terminal-yellow/30 flex items-center justify-center mb-3">
-          <AlertTriangle size={20} className="text-terminal-yellow" />
+        <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 ${
+          isHardError
+            ? 'bg-terminal-red/10 border border-terminal-red/30'
+            : 'bg-terminal-yellow/10 border border-terminal-yellow/30'
+        }`}>
+          <AlertTriangle size={20} className={isHardError ? 'text-terminal-red' : 'text-terminal-yellow'} />
         </div>
         <p className="text-sm font-semibold text-terminal-text mb-1">Can't reach DFlow right now</p>
         <p className="text-xs text-terminal-muted mb-4 text-center max-w-sm">
-          We'll show demo markets in the meantime. Retry to fetch live data.
+          {isHardError
+            ? 'Live market data is unavailable. Retry to reconnect.'
+            : "We'll show demo markets in the meantime. Retry to fetch live data."}
         </p>
         <button
           onClick={refresh}

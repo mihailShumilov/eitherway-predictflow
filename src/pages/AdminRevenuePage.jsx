@@ -50,7 +50,7 @@ export default function AdminRevenuePage() {
           <p className="text-xs text-terminal-muted font-mono">
             {isFeeWalletConfigured()
               ? `Fee wallet: ${FEE_CONFIG.FEE_WALLET.slice(0, 6)}…${FEE_CONFIG.FEE_WALLET.slice(-4)}`
-              : 'Demo mode — fee wallet not configured'}
+              : 'Fee wallet not configured'}
           </p>
         </div>
         <button

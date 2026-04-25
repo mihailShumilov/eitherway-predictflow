@@ -7,6 +7,10 @@ import {
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { usePortfolio } from '../hooks/usePortfolio'
+import { SOLANA_NETWORK } from '../config/env'
+
+const IS_MAINNET = (SOLANA_NETWORK || '').toLowerCase() === 'mainnet'
+const LOCAL_POSITIONS_LABEL = IS_MAINNET ? 'Local positions' : 'Local positions (demo)'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 import ActiveOrders from './ActiveOrders'
@@ -299,7 +303,7 @@ export default function Portfolio() {
         <div>
           <h2 className="text-lg font-semibold text-terminal-text">Portfolio</h2>
           <p className="text-xs text-terminal-muted font-mono">
-            {shortAddress} · {source === 'wallet' ? 'On-chain positions' : 'Local positions (demo)'}
+            {shortAddress} · {source === 'wallet' ? 'On-chain positions' : LOCAL_POSITIONS_LABEL}
           </p>
         </div>
         <button

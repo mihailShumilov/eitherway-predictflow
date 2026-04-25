@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, createContext, useContext } from 'react'
 import { flattenMarkets } from '../data/flattenMarkets'
-import { DFLOW_PROXY_BASE } from '../config/env'
+import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
+
+// Mainnet must never serve synthetic data — fail loudly instead so users don't
+// trade against fake prices. Mock fallback stays available on devnet/other.
+const ALLOW_MOCK_FALLBACK = (SOLANA_NETWORK || '').toLowerCase() !== 'mainnet'
 import { fetchWithRetry } from '../lib/http'
 import { extractOutcomeMints } from '../lib/normalize'
 import { safeGet, safeSet } from '../lib/storage'
@@ -22,6 +26,9 @@ function getCachedData() {
   const parsed = safeGet(CACHE_KEY, null)
   if (!parsed?.timestamp || !parsed.data) return null
   if (Date.now() - parsed.timestamp > CACHE_TTL) return null
+  // Don't serve mock-flagged cache on mainnet — could be left over from a
+  // prior build that allowed fallback.
+  if (!ALLOW_MOCK_FALLBACK && parsed.data.isMock) return null
   return parsed.data
 }
 
@@ -143,13 +150,20 @@ export function MarketsProvider({ children }) {
       setUsingMockData(false)
       setCachedData({ events: normalizedEvents, categories: catsData, isMock: false })
     } catch (err) {
-      const { mockEvents, mockCategories } = await loadMocks()
-      setEvents(mockEvents)
-      setMarkets(flattenMarkets(mockEvents))
-      setCategories(mockCategories)
-      setUsingMockData(true)
       setError(err.message || 'Unable to reach DFlow')
-      setCachedData({ events: mockEvents, categories: mockCategories, isMock: true })
+      if (ALLOW_MOCK_FALLBACK) {
+        const { mockEvents, mockCategories } = await loadMocks()
+        setEvents(mockEvents)
+        setMarkets(flattenMarkets(mockEvents))
+        setCategories(mockCategories)
+        setUsingMockData(true)
+        setCachedData({ events: mockEvents, categories: mockCategories, isMock: true })
+      } else {
+        setEvents([])
+        setMarkets([])
+        setCategories(DEFAULT_CATEGORIES)
+        setUsingMockData(false)
+      }
     } finally {
       setLoading(false)
     }
@@ -176,14 +190,20 @@ export function MarketsProvider({ children }) {
         throw new Error('No results from API')
       }
     } catch {
-      const { mockEvents } = await loadMocks()
-      const filtered = mockEvents.filter(e =>
-        e.title.toLowerCase().includes(query.toLowerCase()) ||
-        e.markets.some(m => m.question.toLowerCase().includes(query.toLowerCase()))
-      )
-      setEvents(filtered)
-      setMarkets(flattenMarkets(filtered))
-      setUsingMockData(true)
+      if (ALLOW_MOCK_FALLBACK) {
+        const { mockEvents } = await loadMocks()
+        const filtered = mockEvents.filter(e =>
+          e.title.toLowerCase().includes(query.toLowerCase()) ||
+          e.markets.some(m => m.question.toLowerCase().includes(query.toLowerCase()))
+        )
+        setEvents(filtered)
+        setMarkets(flattenMarkets(filtered))
+        setUsingMockData(true)
+      } else {
+        setEvents([])
+        setMarkets([])
+        setUsingMockData(false)
+      }
     } finally {
       setLoading(false)
     }

@@ -144,8 +144,8 @@ export default function UpgradeModal({ open, tier, onClose, onSuccess }) {
             <div className="flex items-start gap-2 bg-terminal-yellow/10 border border-terminal-yellow/30 rounded-lg p-3 mb-3 text-xs text-terminal-yellow">
               <AlertCircle size={12} className="mt-0.5 shrink-0" />
               <span>
-                Demo build — fee wallet is not configured. Production deployment requires
-                <code className="font-mono ml-1">VITE_FEE_WALLET</code> set to your Solana pubkey.
+                Fee wallet is not configured — payment will be recorded but not transferred. Set
+                <code className="font-mono ml-1">VITE_FEE_WALLET</code> to your Solana pubkey to collect on-chain.
               </span>
             </div>
           )}
