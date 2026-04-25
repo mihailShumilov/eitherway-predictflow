@@ -1,10 +1,14 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react'
 import { generateRecentTrades } from '../data/mockDetailData'
 import Skeleton from './Skeleton'
 import { normalizeTrade } from '../lib/normalize'
+import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
 
-const DFLOW_BASE = '/api/dflow'
+const DFLOW_BASE = DFLOW_PROXY_BASE
+const ALLOW_MOCK_FALLBACK = (SOLANA_NETWORK || '').toLowerCase() !== 'mainnet'
+const POLL_MS = 8000
+const TRADE_LIMIT = 20
 
 function formatTradeTime(iso) {
   const d = new Date(iso)
@@ -13,54 +17,51 @@ function formatTradeTime(iso) {
 
 export default function RecentTrades({ market }) {
   const [trades, setTrades] = useState([])
-  const [newTradeIdx, setNewTradeIdx] = useState(-1)
+  const [newTradeIds, setNewTradeIds] = useState(() => new Set())
+  const seenIdsRef = useRef(new Set())
 
-  // Initial load from DFlow /trades; fall back to simulated seed on failure
+  // Poll the per-market /trades endpoint. DFlow filters by `ticker=`; the
+  // earlier `market_ticker=` parameter was silently ignored which caused every
+  // market to render the same global firehose. Fall back to the synthetic seed
+  // only on devnet/dev — mainnet must show real activity or nothing.
   useEffect(() => {
     let cancelled = false
     const ticker = market.ticker || market.id
-    async function load() {
+    if (!ticker) return
+    seenIdsRef.current = new Set()
+
+    async function load(isFirst) {
       try {
-        const res = await fetch(`${DFLOW_BASE}/api/v1/trades?market_ticker=${encodeURIComponent(ticker)}&limit=20`)
+        const url = `${DFLOW_BASE}/api/v1/trades?ticker=${encodeURIComponent(ticker)}&limit=${TRADE_LIMIT}`
+        const res = await fetch(url)
         if (!res.ok) throw new Error(`Trades API: ${res.status}`)
         const data = await res.json()
         const raw = Array.isArray(data) ? data : (data.data || data.trades || [])
-        if (!raw.length) throw new Error('Empty trades')
-        const mapped = raw.map(normalizeTrade).filter(Boolean).slice(0, 20)
-        if (!cancelled) setTrades(mapped)
+        const mapped = raw.map(normalizeTrade).filter(Boolean).slice(0, TRADE_LIMIT)
+        if (cancelled) return
+        if (mapped.length === 0) {
+          if (isFirst && ALLOW_MOCK_FALLBACK) setTrades(generateRecentTrades(market.yesAsk, TRADE_LIMIT))
+          else setTrades([])
+          return
+        }
+        const seen = seenIdsRef.current
+        const fresh = mapped.filter(t => !seen.has(t.id)).map(t => t.id)
+        for (const id of fresh) seen.add(id)
+        if (fresh.length && !isFirst) {
+          setNewTradeIds(new Set(fresh))
+          setTimeout(() => setNewTradeIds(new Set()), 600)
+        }
+        setTrades(mapped)
       } catch {
-        if (!cancelled) setTrades(generateRecentTrades(market.yesAsk, 20))
+        if (cancelled) return
+        if (isFirst && ALLOW_MOCK_FALLBACK) setTrades(generateRecentTrades(market.yesAsk, TRADE_LIMIT))
       }
     }
-    load()
-    return () => { cancelled = true }
+
+    load(true)
+    const interval = setInterval(() => load(false), POLL_MS)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [market.id, market.ticker, market.yesAsk])
-
-  // Simulate incoming trades on top of whatever seed we loaded
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTrades(prev => {
-        const lastPrice = prev[0]?.price || market.yesAsk
-        const change = (Math.random() - 0.5) * 0.03
-        const price = Math.max(0.01, Math.min(0.99, lastPrice + change))
-        const side = Math.random() > 0.5 ? 'buy' : 'sell'
-        const amount = Math.floor(50 + Math.random() * 3000)
-        const newTrade = {
-          id: `trade-live-${Date.now()}`,
-          time: new Date().toISOString(),
-          side,
-          price: Math.round(price * 1000) / 1000,
-          amount,
-          total: Math.round(price * amount * 100) / 100,
-        }
-        setNewTradeIdx(0)
-        setTimeout(() => setNewTradeIdx(-1), 600)
-        return [newTrade, ...prev.slice(0, 19)]
-      })
-    }, 3000 + Math.random() * 5000)
-
-    return () => clearInterval(interval)
-  }, [market.yesAsk])
 
   return (
     <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
@@ -96,11 +97,11 @@ export default function RecentTrades({ market }) {
             ))}
           </div>
         )}
-        {trades.map((trade, i) => (
+        {trades.map((trade) => (
           <div
             key={trade.id}
             className={`grid grid-cols-4 gap-2 px-4 py-1.5 text-xs font-mono transition-all duration-300 ${
-              i === newTradeIdx ? 'bg-terminal-accent/10' : 'hover:bg-terminal-card/50'
+              newTradeIds.has(trade.id) ? 'bg-terminal-accent/10' : 'hover:bg-terminal-card/50'
             }`}
           >
             <span className="text-terminal-muted">{formatTradeTime(trade.time)}</span>

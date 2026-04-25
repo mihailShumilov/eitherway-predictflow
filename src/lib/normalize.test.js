@@ -44,6 +44,31 @@ describe('normalizeTrade', () => {
     const t = normalizeTrade({ price: 0.5, amount: 100, t: 0 }, 0)
     expect(t.total).toBe(50)
   })
+
+  it('parses DFlow live trade shape', () => {
+    const t = normalizeTrade({
+      tradeId: 'abc',
+      ticker: 'KXNBA-26-LAL',
+      yesPriceDollars: '0.0600',
+      countFp: '17.20',
+      takerSide: 'yes',
+      createdTime: 1777150514,
+    }, 0)
+    expect(t.id).toBe('abc')
+    expect(t.price).toBe(0.06)
+    expect(t.amount).toBe(17)
+    expect(t.side).toBe('buy')
+    expect(t.time).toBe(new Date(1777150514_000).toISOString())
+  })
+
+  it('rescales integer-cents price', () => {
+    const t = normalizeTrade({ price: 60, count: 5 }, 0)
+    expect(t.price).toBe(0.6)
+  })
+
+  it('maps takerSide=no to sell', () => {
+    expect(normalizeTrade({ yesPriceDollars: '0.5', countFp: '1', takerSide: 'no' }, 0).side).toBe('sell')
+  })
 })
 
 describe('normalizeMarket', () => {

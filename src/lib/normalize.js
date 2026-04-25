@@ -42,17 +42,33 @@ export function normalizeLevel(level) {
   return Number.isFinite(price) && Number.isFinite(size) ? { price, size } : null
 }
 
+// DFlow trade shape (live):
+//   { tradeId, ticker, yesPriceDollars: "0.0600", noPriceDollars: "0.9400",
+//     count, countFp: "17.20", takerSide: "yes"|"no", createdTime: <unix s> }
+// Older/mock shapes used { time, price (0..1), amount, side: "buy"|"sell" }.
 export function normalizeTrade(t, i = 0) {
   if (!t || typeof t !== 'object') return null
-  const timeMs = toMs(t.time ?? t.timestamp ?? t.t ?? t.createdAt) ?? Date.now()
+  const timeMs = toMs(t.createdTime ?? t.time ?? t.timestamp ?? t.t ?? t.createdAt) ?? Date.now()
   const timeIso = new Date(timeMs).toISOString()
-  const price = parseFloat(t.price ?? t.p ?? 0)
-  const amount = parseFloat(t.amount ?? t.size ?? t.qty ?? 0)
+  // Prefer the decimal string DFlow ships; fall back to integer cents (`price`,
+  // `yesPrice`), or the raw 0..1 mock value (`price`, `p`).
+  let price = parseFloat(t.yesPriceDollars ?? t.price ?? t.yesPrice ?? t.p)
+  if (Number.isFinite(price) && price > 1) price = price / 100
+  const amount = parseFloat(t.countFp ?? t.count ?? t.amount ?? t.size ?? t.qty ?? 0)
   if (!Number.isFinite(price) || !Number.isFinite(amount)) return null
-  const sideRaw = (t.side ?? t.direction ?? '').toString().toLowerCase()
-  const side = sideRaw === 'sell' || sideRaw === 'ask' ? 'sell' : 'buy'
+  // takerSide is YES/NO (not buy/sell). YES taker = bullish on YES → BUY in
+  // this YES-centric view; NO taker → SELL. Fall back to legacy side fields
+  // for older payloads.
+  const taker = (t.takerSide ?? '').toString().toLowerCase()
+  let side
+  if (taker === 'yes') side = 'buy'
+  else if (taker === 'no') side = 'sell'
+  else {
+    const legacy = (t.side ?? t.direction ?? '').toString().toLowerCase()
+    side = legacy === 'sell' || legacy === 'ask' ? 'sell' : 'buy'
+  }
   return {
-    id: t.id || `trade-${timeIso}-${i}`,
+    id: t.tradeId || t.id || `trade-${timeIso}-${i}`,
     time: timeIso,
     side,
     price: Math.round(price * 1000) / 1000,
