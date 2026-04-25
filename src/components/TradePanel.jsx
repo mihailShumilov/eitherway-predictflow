@@ -25,7 +25,7 @@ export default function TradePanel({ market }) {
   const { connected, address } = useWallet()
   const { strategiesForMarket, stopStrategy } = useDCA()
   const { balance: usdcBalance } = useUsdcBalance(address)
-  const { verified: kycVerified } = useKyc()
+  const { verified: kycVerified, setShowModal: openKycModal } = useKyc()
   const trade = useTradeSubmit(market)
 
   const [side, setSide] = useState(market?.side || 'yes')
@@ -76,7 +76,13 @@ export default function TradePanel({ market }) {
     trade.resetResult()
   }
 
+  const needsCta = !connected || !kycVerified
+
   const onPrimary = () => {
+    if (connected && !kycVerified) {
+      openKycModal(true)
+      return
+    }
     if (effectiveOrderType === 'market') {
       trade.submitMarketTrade({ side, amount })
     } else if (effectiveOrderType === 'dca') {
@@ -89,8 +95,7 @@ export default function TradePanel({ market }) {
   const primaryDisabled = trade.submitting
     || isClosed
     || mintsMissing
-    || (!amount && connected)
-    || insufficientUsdc
+    || (!needsCta && (!amount || insufficientUsdc))
 
   return (
     <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">

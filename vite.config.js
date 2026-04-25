@@ -18,6 +18,109 @@ function excludeDevScriptsPlugin() {
   }
 }
 
+// Dev-only mirror of functions/api/dflow-kyc-check.js — probes DFlow /order
+// with a tiny canary trade for the given wallet and reports whether DFlow is
+// willing to route. The canary outcome mint is cached in-process for 1 hour.
+function dflowKycCheckDevPlugin({ upstream, orderUpstream, authHeaders }) {
+  const KYC_KEYWORDS = ['kyc', 'not verified', 'verify', 'verification', 'identity', 'proof', 'unverified']
+  const COMPLIANCE_KEYWORDS = ['jurisdiction', 'region', 'restricted', 'ineligible', 'geo', 'geoblock', 'blocked', 'country', 'not eligible']
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+  const PROBE_AMOUNT = 1_000_000
+  const CACHE_TTL_MS = 3600 * 1000
+
+  let canaryCache = null
+
+  async function readJson(req) {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const raw = Buffer.concat(chunks).toString('utf8')
+    try { return raw ? JSON.parse(raw) : {} } catch { return {} }
+  }
+
+  async function getCanaryMint() {
+    if (canaryCache && Date.now() - canaryCache.t < CACHE_TTL_MS) return canaryCache.mint
+    const target = `${upstream.replace(/\/+$/, '')}/api/v1/markets?status=active&isInitialized=true&limit=20`
+    const resp = await fetch(target, { headers: authHeaders || {} })
+    if (!resp.ok) return null
+    const payload = await resp.json().catch(() => null)
+    const markets = Array.isArray(payload?.markets) ? payload.markets : (Array.isArray(payload) ? payload : [])
+    for (const m of markets) {
+      for (const acct of Object.values(m?.accounts || {})) {
+        if (acct?.isInitialized && typeof acct?.yesMint === 'string' && acct.yesMint.length >= 32) {
+          canaryCache = { t: Date.now(), mint: acct.yesMint }
+          return acct.yesMint
+        }
+      }
+    }
+    return null
+  }
+
+  function classify(status, text) {
+    let parsed = null
+    try { parsed = text ? JSON.parse(text) : null } catch {}
+    const haystack = (text + ' ' + (parsed?.message || '') + ' ' + (parsed?.error || '') + ' ' + (parsed?.code || '')).toLowerCase()
+    const msg = (parsed?.message || parsed?.error || '').toString().trim()
+    const kycHit = KYC_KEYWORDS.some(k => haystack.includes(k))
+    const complianceHit = COMPLIANCE_KEYWORDS.some(k => haystack.includes(k))
+    if (status === 401 || status === 403 || kycHit) return { kind: 'kyc', message: msg || 'Identity verification required to trade.' }
+    if (status === 451 || complianceHit) return { kind: 'compliance', message: msg || 'Trading is not available in your region.' }
+    return { kind: 'other', message: msg || `Order API ${status}` }
+  }
+
+  function isPlausibleSolanaAddress(s) {
+    return typeof s === 'string' && s.length >= 32 && s.length <= 64 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(s)
+  }
+
+  return {
+    name: 'predictflow:dflow-kyc-check-dev',
+    configureServer(server) {
+      server.middlewares.use('/api/dflow-kyc-check', async (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          return res.end('Method Not Allowed')
+        }
+        const body = await readJson(req)
+        const wallet = typeof body?.wallet === 'string' ? body.wallet.trim() : ''
+        res.setHeader('content-type', 'application/json; charset=utf-8')
+        if (!isPlausibleSolanaAddress(wallet)) {
+          res.statusCode = 400
+          return res.end(JSON.stringify({ verified: false, reason: 'wallet missing or malformed' }))
+        }
+        let canary
+        try { canary = await getCanaryMint() } catch { canary = null }
+        if (!canary) {
+          res.statusCode = 502
+          return res.end(JSON.stringify({ verified: false, reason: 'no canary market available', transient: true }))
+        }
+        const url = new URL(orderUpstream)
+        url.searchParams.set('inputMint', USDC)
+        url.searchParams.set('outputMint', canary)
+        url.searchParams.set('amount', String(PROBE_AMOUNT))
+        url.searchParams.set('userPublicKey', wallet)
+        let resp
+        try {
+          resp = await fetch(url.toString(), { headers: authHeaders || {} })
+        } catch (err) {
+          res.statusCode = 502
+          return res.end(JSON.stringify({ verified: false, reason: 'probe network error', transient: true }))
+        }
+        if (resp.ok) {
+          res.statusCode = 200
+          return res.end(JSON.stringify({ verified: true }))
+        }
+        const text = await resp.text().catch(() => '')
+        const classified = classify(resp.status, text)
+        if (classified.kind === 'kyc' || classified.kind === 'compliance') {
+          res.statusCode = 200
+          return res.end(JSON.stringify({ verified: false, reason: classified.message }))
+        }
+        res.statusCode = 502
+        res.end(JSON.stringify({ verified: false, reason: classified.message, transient: true }))
+      })
+    },
+  }
+}
+
 // Dev-only mirror of functions/api/dflow-series-categories.js — fetches the
 // heavy upstream /api/v1/series once per process and serves the slim
 // ticker→category lookup. In prod the Cloudflare Pages Function handles this.
@@ -89,6 +192,7 @@ export default defineConfig(({ mode }) => {
       react({ jsxRuntime: 'automatic' }),
       excludeDevScriptsPlugin(),
       dflowSeriesCategoriesDevPlugin({ upstream, authHeaders }),
+      dflowKycCheckDevPlugin({ upstream, orderUpstream, authHeaders }),
     ],
     server: {
       watch: {

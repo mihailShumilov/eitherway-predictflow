@@ -1,12 +1,14 @@
 import React, { useState } from 'react'
 import { AlertCircle, Lock, Wallet, ShieldCheck, Repeat } from 'lucide-react'
 import { DCA_FREQUENCIES } from '../../hooks/useDCA'
+import { useKyc } from '../../hooks/useKyc'
 import DcaProgress from './DcaProgress'
 
 export default function DcaForm({
   market, side, isClosed, mintsMissing, connected, kycVerified,
   usdcBalance, strategies, activeStrategy, onSubmit, onStop,
 }) {
+  const { setShowModal: openKycModal } = useKyc()
   const [amountPerBuy, setAmountPerBuy] = useState('')
   const [frequency, setFrequency] = useState('4h')
   const [totalBudget, setTotalBudget] = useState('')
@@ -94,13 +96,17 @@ export default function DcaForm({
 
           <button
             onClick={() => {
+              if (connected && !kycVerified) {
+                openKycModal(true)
+                return
+              }
               onSubmit({ side, amountPerBuy: perBuyNum, frequency, totalBudget: budgetNum })
               if (!insufficientBudget && !isClosed && !mintsMissing && perBuyNum > 0 && budgetNum > 0 && purchases > 0) {
                 setAmountPerBuy('')
                 setTotalBudget('')
               }
             }}
-            disabled={isClosed || mintsMissing || !perBuyNum || !budgetNum || purchases < 1 || insufficientBudget}
+            disabled={isClosed || mintsMissing || (connected && kycVerified && (!perBuyNum || !budgetNum || purchases < 1 || insufficientBudget))}
             className="w-full py-3 min-h-[44px] rounded-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 bg-terminal-accent hover:bg-blue-500 text-white shadow-lg shadow-terminal-accent/20 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
           >
             {isClosed ? (
