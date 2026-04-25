@@ -3,6 +3,8 @@ import { useWallet } from './useWallet'
 import { useConditionalOrders } from './useConditionalOrders'
 import { useDCA } from './useDCA'
 import { useKyc } from './useKyc'
+import { useUserTier } from './useUserTier'
+import { useReferral } from './useReferral'
 import {
   DFLOW_QUOTE_URL, DFLOW_ORDER_URL, USDC_MINT,
   ALLOW_SYNTHESIZED_MINTS, ALLOW_SIMULATED_FILLS,
@@ -16,6 +18,12 @@ import { safeErrorMessage } from '../lib/errorMessage'
 import { classifyOrderResponse, isGateRejection } from '../lib/dflowErrors'
 import { formatSimulationError } from '../lib/simulationErrors'
 import { appendPosition } from '../lib/storage'
+import { calculateFee } from '../services/feeService'
+import { recordReferralEarning } from '../services/referralService'
+import { FEE_CONFIG, isFeeWalletConfigured } from '../config/fees'
+import { buildFeeTransferTransaction } from '../lib/feeTransfer'
+import { logFeeEvent } from '../lib/feeLog'
+import { emitReferralUpdate } from './useReferral'
 
 function getRealMint(market, side) {
   if (side === 'yes' && market.yesMint) return market.yesMint
@@ -36,6 +44,50 @@ function getTokenMint(market, side) {
 // reopening the trade panel while a submit is still pending cannot double-spend.
 const submissionLocks = new Set()
 
+// Pull the platform (and optional referrer) fee out of the user's USDC ATA
+// after the swap settled. Skipped when the fee wallet is the placeholder
+// (no real recipient configured) — caller still records the event in the
+// fee log so the revenue dashboard can show "would-be" fee accrual.
+async function sweepFee({ address, activeWallet, feeCalc, referrer }) {
+  if (!isFeeWalletConfigured()) {
+    throw new Error('Fee wallet not configured — set VITE_FEE_WALLET to enable on-chain fee collection')
+  }
+  const provider = activeWallet?.getProvider?.()
+  if (!provider) throw new Error('Wallet provider unavailable for fee transfer')
+
+  const transfers = []
+  if (feeCalc.platformAmount > 0) {
+    transfers.push({
+      toPubkey: FEE_CONFIG.FEE_WALLET,
+      amountLamports: Math.floor(feeCalc.platformAmount * 1e6),
+      label: 'platform',
+    })
+  }
+  if (feeCalc.referralAmount > 0 && referrer) {
+    transfers.push({
+      toPubkey: referrer,
+      amountLamports: Math.floor(feeCalc.referralAmount * 1e6),
+      label: 'referrer',
+    })
+  }
+  if (transfers.length === 0) return null
+
+  const built = await buildFeeTransferTransaction({
+    fromPubkey: address,
+    mint: USDC_MINT,
+    transfers,
+  })
+  if (!built) return null
+
+  if (typeof provider.signAndSendTransaction === 'function') {
+    return await provider.signAndSendTransaction(built.tx)
+  }
+  if (typeof provider.signTransaction === 'function') {
+    return await provider.signTransaction(built.tx)
+  }
+  throw new Error('Wallet does not support signing')
+}
+
 // Encapsulates every trade-submission path (market / conditional / DCA) plus
 // quote preview. Returns the UX state the panel wants to render and the set of
 // handlers the panel wires to buttons.
@@ -44,6 +96,8 @@ export function useTradeSubmit(market) {
   const { addOrder } = useConditionalOrders()
   const { startStrategy } = useDCA()
   const { requireKyc, verifyWithServer, showModalWithReason } = useKyc()
+  const { tier } = useUserTier()
+  const { referrer, hasReferrer } = useReferral()
 
   const [submitting, setSubmitting] = useState(false)
   const [previewing, setPreviewing] = useState(false)
@@ -58,20 +112,31 @@ export function useTradeSubmit(market) {
     setPreviewing(true)
     setQuote(null)
     const price = side === 'yes' ? market.yesAsk : market.noAsk
-    const shares = (parseFloat(amount) / price).toFixed(2)
+    const inputAmount = parseFloat(amount)
+    // Fee is deducted *before* DFlow sees the order, so the est. shares
+    // shown to the user reflect the post-fee net amount.
+    const feeCalc = calculateFee(inputAmount, tier, hasReferrer)
+    const netAmount = feeCalc.netAmount
+    const shares = (netAmount / price).toFixed(2)
 
     try {
       const outputMint = getTokenMint(market, side)
       if (!outputMint) throw new Error('Market has no tradeable outcome mint')
-      const amountLamports = Math.floor(parseFloat(amount) * 1e6)
-      const url = `${DFLOW_QUOTE_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${amountLamports}`
+      const netLamports = Math.floor(netAmount * 1e6)
+      const url = `${DFLOW_QUOTE_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${netLamports}`
       const res = await fetchWithRetry(url, {}, { retries: 1, timeoutMs: 6000 })
       if (res.ok) {
         const data = await res.json()
         setQuote({
           outputAmount: data.outAmount ? (data.outAmount / 1e6).toFixed(4) : shares,
           priceImpact: data.priceImpact || '0.12',
-          fee: data.fee || (parseFloat(amount) * 0.001).toFixed(4),
+          fee: feeCalc.feeAmount.toFixed(4),
+          feeBps: feeCalc.feeBps,
+          netAmount: feeCalc.netAmount,
+          inputAmount: feeCalc.inputAmount,
+          referralAmount: feeCalc.referralAmount,
+          platformAmount: feeCalc.platformAmount,
+          tier,
           route: data.routePlan?.length || 1,
           source: 'DFlow',
         })
@@ -84,18 +149,23 @@ export function useTradeSubmit(market) {
         return
       }
       const slippage = Math.random() * 0.5 + 0.05
-      const fee = (parseFloat(amount) * 0.001).toFixed(4)
       setQuote({
         outputAmount: shares,
         priceImpact: slippage.toFixed(2),
-        fee,
+        fee: feeCalc.feeAmount.toFixed(4),
+        feeBps: feeCalc.feeBps,
+        netAmount: feeCalc.netAmount,
+        inputAmount: feeCalc.inputAmount,
+        referralAmount: feeCalc.referralAmount,
+        platformAmount: feeCalc.platformAmount,
+        tier,
         route: 1,
         source: 'Simulated',
       })
     } finally {
       setPreviewing(false)
     }
-  }, [market])
+  }, [market, tier, hasReferrer])
 
   const submitMarketTrade = useCallback(async ({ side, amount }) => {
     if (!connected) { connect(); return }
@@ -112,7 +182,6 @@ export function useTradeSubmit(market) {
     setResult(null)
 
     const price = side === 'yes' ? market.yesAsk : market.noAsk
-    const shares = (parseFloat(amount) / price).toFixed(2)
 
     let firstError = null
     const fail = (err) => { if (!firstError) firstError = err }
@@ -122,15 +191,24 @@ export function useTradeSubmit(market) {
       if (!outputMint) {
         throw new Error('This market has no tradeable outcome mint yet. Try another market.')
       }
-      const amountLamports = Math.floor(parseFloat(amount) * 1e6)
+      const inputAmountUSDC = parseFloat(amount)
+      const feeCalc = calculateFee(inputAmountUSDC, tier, !!referrer)
+      // Shares = net (post-fee) USDC / price — what DFlow actually buys.
+      const shares = (feeCalc.netAmount / price).toFixed(2)
+      // DFlow sees only the post-fee amount; the difference stays in the user's
+      // USDC ATA and gets swept by a follow-up transfer below.
+      const netLamports = Math.floor(feeCalc.netAmount * 1e6)
       const idempotencyKey = generateIdempotencyKey('mkt')
-      track('trade_submit', { marketId: market.id, side, amount: parseFloat(amount), orderType: 'market' })
+      track('trade_submit', {
+        marketId: market.id, side, amount: inputAmountUSDC, orderType: 'market',
+        tier, feeBps: feeCalc.feeBps, hasReferrer: !!referrer,
+      })
 
       let txSigned = false
       let txSignature = null
 
       try {
-        const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${amountLamports}&userPublicKey=${address}`
+        const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${netLamports}&userPublicKey=${address}`
         const res = await fetchWithRetry(url, {
           headers: { 'X-Idempotency-Key': idempotencyKey },
         }, { retries: 1, timeoutMs: 8000 })
@@ -201,18 +279,63 @@ export function useTradeSubmit(market) {
         throw firstError || new Error('Order could not be signed. No trade was placed.')
       }
 
+      // Best-effort fee sweep: a separate signed tx pulls platform fee
+      // (and optional referral split) from the user's USDC ATA. If this
+      // step fails, the swap already settled, so we record the intent in
+      // the fee log and let the user know — we never roll the trade back.
+      let feeStatus = 'skipped'
+      let feeError = null
+      if (txSigned && feeCalc.feeAmount > 0) {
+        try {
+          await sweepFee({
+            address,
+            activeWallet,
+            feeCalc,
+            referrer,
+          })
+          feeStatus = 'sent'
+        } catch (err) {
+          feeStatus = 'failed'
+          feeError = safeErrorMessage(err, 'Fee transfer failed')
+          reportError(err, { context: 'feeTransfer', marketId: market.id })
+        }
+      }
+
+      logFeeEvent({
+        marketId: market.id,
+        side,
+        inputAmount: feeCalc.inputAmount,
+        netAmount: feeCalc.netAmount,
+        feeAmount: feeCalc.feeAmount,
+        feeBps: feeCalc.feeBps,
+        platformAmount: feeCalc.platformAmount,
+        referralAmount: feeCalc.referralAmount,
+        referrer: referrer || null,
+        tier,
+        feeStatus,
+        txSigned,
+      })
+      if (feeCalc.referralAmount > 0 && referrer && feeStatus === 'sent') {
+        recordReferralEarning(referrer, feeCalc.referralAmount)
+        emitReferralUpdate()
+      }
+
       const order = {
         id: idempotencyKey,
         marketId: market.id,
         side,
         type: 'market',
         amount: parseFloat(amount),
+        netAmount: feeCalc.netAmount,
+        feeAmount: feeCalc.feeAmount,
         price,
         shares: parseFloat(shares),
         timestamp: new Date().toISOString(),
         status: 'filled',
         txSigned,
         txSignature: txSignature || (txSigned ? 'signed' : 'simulated'),
+        feeStatus,
+        feeError,
       }
       appendPosition({
         ...order,
@@ -220,8 +343,11 @@ export function useTradeSubmit(market) {
         eventTitle: market.eventTitle,
         category: market.category,
       })
-      track('trade_filled', { marketId: market.id, side, amount: parseFloat(amount), simulated: !txSigned })
-      setResult({ success: true, order })
+      track('trade_filled', {
+        marketId: market.id, side, amount: parseFloat(amount),
+        simulated: !txSigned, feeStatus, feeAmount: feeCalc.feeAmount,
+      })
+      setResult({ success: true, order, feeCalc, feeStatus, feeError })
       setQuote(null)
     } catch (err) {
       reportError(err, { context: 'handleMarketTrade', marketId: market.id })
@@ -244,7 +370,7 @@ export function useTradeSubmit(market) {
       submissionLocks.delete(nonce)
       setSubmitting(false)
     }
-  }, [connected, connect, requireKyc, verifyWithServer, showModalWithReason, market, address, activeWallet])
+  }, [connected, connect, requireKyc, verifyWithServer, showModalWithReason, market, address, activeWallet, tier, referrer])
 
   const submitConditionalOrder = useCallback(({ orderType, side, amount, triggerPrice }) => {
     if (!connected) { connect(); return }

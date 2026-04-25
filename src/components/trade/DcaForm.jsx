@@ -2,6 +2,10 @@ import React, { useState } from 'react'
 import { AlertCircle, Lock, Wallet, ShieldCheck, Repeat } from 'lucide-react'
 import { DCA_FREQUENCIES } from '../../hooks/useDCA'
 import { useKyc } from '../../hooks/useKyc'
+import { useUserTier } from '../../hooks/useUserTier'
+import { useUpgradeModal } from '../../hooks/useUpgradeModal'
+import { canUseDCA } from '../../services/feeService'
+import UpgradeNudge from '../monetization/UpgradeNudge'
 import DcaProgress from './DcaProgress'
 
 export default function DcaForm({
@@ -9,9 +13,25 @@ export default function DcaForm({
   usdcBalance, strategies, activeStrategy, onSubmit, onStop,
 }) {
   const { setShowModal: openKycModal } = useKyc()
+  const { tier } = useUserTier()
+  const { open: openUpgrade } = useUpgradeModal()
   const [amountPerBuy, setAmountPerBuy] = useState('')
   const [frequency, setFrequency] = useState('4h')
   const [totalBudget, setTotalBudget] = useState('')
+
+  // DCA is gated to Pro+ — show locked overlay for free users (skip the
+  // gate when the user has an active strategy from a prior tier so they
+  // can still see/manage it).
+  if (connected && !canUseDCA(tier) && !activeStrategy) {
+    return (
+      <UpgradeNudge
+        variant="lock"
+        message="DCA strategies are available on the Pro plan. Automate buys over time and smooth your entry price."
+        ctaLabel="Upgrade to Pro"
+        onClick={() => openUpgrade('PRO')}
+      />
+    )
+  }
 
   const perBuyNum = parseFloat(amountPerBuy) || 0
   const budgetNum = parseFloat(totalBudget) || 0

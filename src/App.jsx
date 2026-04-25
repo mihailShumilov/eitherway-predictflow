@@ -8,17 +8,22 @@ import { LivePricesProvider } from './hooks/useLivePrices'
 import { KycProvider } from './hooks/useKyc'
 import { HealthProvider } from './hooks/useHealth'
 import { LegalModalProvider } from './hooks/useLegalModal'
+import { UpgradeModalProvider } from './hooks/useUpgradeModal'
 import KycModal from './components/KycModal'
 import Header from './components/Header'
 import CategorySidebar from './components/CategorySidebar'
 import MarketGrid from './components/MarketGrid'
 import Positions from './components/Positions'
 import BottomBar from './components/BottomBar'
+import FeeDisclosure from './components/monetization/FeeDisclosure'
+import { captureReferralFromUrl } from './services/referralService'
 import { X, Bell, AlertTriangle } from 'lucide-react'
 
 // Heavy routes — defer to reduce initial bundle.
 const MarketDetail = lazy(() => import('./components/MarketDetail'))
 const Portfolio = lazy(() => import('./components/Portfolio'))
+const PricingPage = lazy(() => import('./pages/PricingPage'))
+const AdminRevenuePage = lazy(() => import('./pages/AdminRevenuePage'))
 
 function OrderNotifications() {
   const { notifications, dismissNotification, pendingOrders } = useConditionalOrders()
@@ -84,6 +89,9 @@ function AppLayout() {
   const { allMarkets, setSelectedCategory, setSelectedSubcategory } = useMarkets()
   const { page, marketTicker, side, category, subcategory, navigate } = useRoute()
 
+  // Capture ?ref= once on first paint — referrer becomes sticky for this device.
+  useEffect(() => { captureReferralFromUrl() }, [])
+
   // URL is source of truth for category selection — sync to provider state.
   useEffect(() => {
     setSelectedCategory(category || 'All')
@@ -110,7 +118,7 @@ function AppLayout() {
       <KycModal />
       <Header page={page} onPageChange={handlePageChange} />
       <div className="flex-1 flex flex-col lg:flex-row gap-4 p-4 max-w-screen-2xl mx-auto w-full">
-        {page === 'explore' ? (
+        {page === 'explore' && (
           <>
             <CategorySidebar />
             <main className="flex-1 min-w-0 space-y-6">
@@ -118,14 +126,34 @@ function AppLayout() {
               <Positions />
             </main>
           </>
-        ) : (
+        )}
+        {page === 'portfolio' && (
           <main className="flex-1 min-w-0">
             <Suspense fallback={<div className="py-20 text-center text-sm text-terminal-muted">Loading portfolio…</div>}>
               <Portfolio />
             </Suspense>
           </main>
         )}
+        {page === 'pricing' && (
+          <main className="flex-1 min-w-0">
+            <Suspense fallback={<div className="py-20 text-center text-sm text-terminal-muted">Loading pricing…</div>}>
+              <PricingPage onPageChange={handlePageChange} />
+            </Suspense>
+          </main>
+        )}
+        {page === 'admin-revenue' && (
+          <main className="flex-1 min-w-0">
+            <Suspense fallback={<div className="py-20 text-center text-sm text-terminal-muted">Loading dashboard…</div>}>
+              <AdminRevenuePage />
+            </Suspense>
+          </main>
+        )}
       </div>
+      {(page === 'explore' || page === 'pricing') && (
+        <div className="px-4 pb-4 max-w-screen-2xl mx-auto w-full">
+          <FeeDisclosure />
+        </div>
+      )}
       <BottomBar />
       {selectedMarket && (
         <Suspense fallback={null}>
@@ -149,7 +177,9 @@ export default function App() {
               <OrdersProvider>
                 <DCAProvider>
                   <LegalModalProvider>
-                    <AppLayout />
+                    <UpgradeModalProvider>
+                      <AppLayout />
+                    </UpgradeModalProvider>
                   </LegalModalProvider>
                 </DCAProvider>
               </OrdersProvider>

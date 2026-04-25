@@ -9,6 +9,9 @@ import { useDCA } from '../hooks/useDCA'
 import { useUsdcBalance } from '../hooks/useUsdcBalance'
 import { useKyc } from '../hooks/useKyc'
 import { useTradeSubmit } from '../hooks/useTradeSubmit'
+import { useUserTier } from '../hooks/useUserTier'
+import { useUpgradeModal } from '../hooks/useUpgradeModal'
+import { canCreateConditionalOrder } from '../services/feeService'
 import { ALLOW_SYNTHESIZED_MINTS } from '../config/env'
 import { getPositions, subscribePositions, getPositionsVersion } from '../lib/storage'
 import TradeStatusBadge from './trade/TradeStatusBadge'
@@ -16,6 +19,8 @@ import SideSelector from './trade/SideSelector'
 import OrderTypeTabs, { ORDER_TABS } from './trade/OrderTypeTabs'
 import DcaForm from './trade/DcaForm'
 import ResultBanner from './trade/ResultBanner'
+import FeeBreakdown from './monetization/FeeBreakdown'
+import UpgradeNudge from './monetization/UpgradeNudge'
 
 function hasPosition(marketId) {
   return getPositions().some(p => p.marketId === marketId && p.status === 'filled')
@@ -24,8 +29,11 @@ function hasPosition(marketId) {
 export default function TradePanel({ market }) {
   const { connected, address } = useWallet()
   const { strategiesForMarket, stopStrategy } = useDCA()
+  const { pendingOrders } = useConditionalOrders()
   const { balance: usdcBalance } = useUsdcBalance(address)
   const { verified: kycVerified, setShowModal: openKycModal } = useKyc()
+  const { tier } = useUserTier()
+  const { open: openUpgrade } = useUpgradeModal()
   const trade = useTradeSubmit(market)
 
   const [side, setSide] = useState(market?.side || 'yes')
@@ -176,8 +184,24 @@ export default function TradePanel({ market }) {
             )}
 
             {trade.quote && !trade.quote.error && effectiveOrderType === 'market' && (
-              <QuoteCard quote={trade.quote} />
+              <>
+                <QuoteCard quote={trade.quote} />
+                <FeeBreakdown quote={trade.quote} onUpgradeClick={() => openUpgrade('PRO')} />
+              </>
             )}
+
+            {effectiveOrderType !== 'market' && effectiveOrderType !== 'dca' && (() => {
+              const limit = canCreateConditionalOrder(tier, pendingOrders.length)
+              if (limit.allowed) return null
+              return (
+                <UpgradeNudge
+                  tone="yellow"
+                  message={limit.reason}
+                  ctaLabel={tier === 'FREE' ? 'Upgrade to Pro' : 'Upgrade to Whale'}
+                  onClick={() => openUpgrade(tier === 'FREE' ? 'PRO' : 'WHALE')}
+                />
+              )
+            })()}
 
             {insufficientUsdc && (
               <div className="flex items-start gap-2 bg-terminal-yellow/10 border border-terminal-yellow/30 rounded-lg p-2.5 text-xs text-terminal-yellow">

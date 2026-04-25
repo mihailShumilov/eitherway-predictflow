@@ -48,13 +48,14 @@ WebSocket are still hit directly from the browser.
 1. [Features](#features)
 2. [Architecture](#architecture)
 3. [Data flow](#data-flow)
-4. [localStorage schema](#localstorage-schema)
-5. [Environment variables](#environment-variables)
-6. [Local development](#local-development)
-7. [Production deployment](#production-deployment)
-8. [Security model](#security-model)
-9. [Testing](#testing)
-10. [Troubleshooting](#troubleshooting)
+4. [Monetization & fees](#monetization--fees)
+5. [localStorage schema](#localstorage-schema)
+6. [Environment variables](#environment-variables)
+7. [Local development](#local-development)
+8. [Production deployment](#production-deployment)
+9. [Security model](#security-model)
+10. [Testing](#testing)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -103,6 +104,15 @@ WebSocket are still hit directly from the browser.
 **Observability**
 - Sentry- and PostHog-compatible shims; integrations load lazily when the
   corresponding env var **and** package are present.
+
+**Monetization**
+- Three subscription tiers (Free / Pro / Whale) with per-tier swap-fee
+  rates (0.30% / 0.15% / 0.05%) deducted before DFlow sees the order.
+- Fee transfer is a second wallet-signed SPL USDC tx targeting
+  `VITE_FEE_WALLET`, with an optional 20% split to a referrer.
+- Pricing page (`/#/pricing`), upgrade modal that pays subscription in
+  USDC, hidden revenue dashboard at `/#/admin/revenue` for the fee
+  wallet operator. See [Monetization & fees](#monetization--fees).
 
 ---
 
@@ -317,21 +327,184 @@ setInterval(1000, async () => {
 
 ---
 
+## Monetization & fees
+
+PredictFlow's revenue model has three layers. Each one stacks; turn off
+any of them by leaving the corresponding env var or UI surface unused.
+
+### Tier table
+
+Defined in `src/config/fees.js` (`FEE_CONFIG.TIERS`).
+
+| Tier   | Swap fee | Conditional orders | DCA | Subscription (USDC/mo) |
+| ------ | -------- | ------------------ | --- | ---------------------- |
+| Free   | 0.30%    | 1 active           | ✗   | $0                     |
+| Pro    | 0.15%    | up to 10           | ✓   | $9.99                  |
+| Whale  | 0.05%    | unlimited          | ✓   | $29.99                 |
+
+Tier rates are basis points. Trades below `MIN_TRADE_FOR_FEE` ($1.00 USDC)
+are waived so the on-chain transfer cost doesn't dominate the fee.
+
+### Fee flow on every trade
+
+```
+User enters $100, FREE tier, no referrer
+        │
+        ▼
+calculateFee(100, 'FREE') → { feeAmount: 0.30, netAmount: 99.70 }
+        │
+        ▼
+DFlow /order called with amount = 99.70 USDC          (1st sign)
+        │   user signs the swap; net amount enters DFlow router
+        ▼
+Wallet still holds $0.30 in its USDC ATA
+        │
+        ▼
+buildFeeTransferTransaction({ transfers: [
+  { to: VITE_FEE_WALLET, amount: 0.30 },              (2nd sign)
+  // + { to: referrer, amount: 0.06 } when applicable
+]})
+        │   user signs the fee sweep
+        ▼
+logFeeEvent({ tier, feeAmount, platformAmount, ... })
+appendPosition({ amount: 100, netAmount: 99.70, feeAmount: 0.30 })
+```
+
+The fee sweep is a **separate, best-effort** legacy `Transaction`. If it
+fails, the swap already settled — the trade is recorded, the failure is
+logged with `feeStatus: 'failed'`, and the user sees a non-blocking
+notice. We never roll the trade back.
+
+The SPL Transfer + idempotent ATA-create instructions are built by hand
+in `src/lib/feeTransfer.js` (no `@solana/spl-token` dependency added —
+the project keeps `@solana/web3.js` as the only Solana lib).
+
+### Referral split
+
+- Code = first 8 characters of the wallet pubkey.
+- Each connecting wallet auto-registers itself in
+  `predictflow_referral_registry` so any visitor's `?ref=<code>` URL
+  resolves back to a payable pubkey.
+- Captured `?ref=` is sticky: the first value seen is stored in
+  `predictflow_referrer` and never overwritten on subsequent visits.
+- Self-referrals are filtered out (a user clicking their own link
+  earns nothing).
+- When a referrer is active, 20% of the fee (`REFERRAL_SHARE_PERCENT`)
+  is paid to them as a second `SplToken::Transfer` instruction in the
+  same fee-sweep transaction. Earnings are tracked in
+  `predictflow_referral_earnings`.
+
+### Tier persistence (MVP vs. production)
+
+| Concern         | MVP (this repo)                                                | Production path                                       |
+| --------------- | -------------------------------------------------------------- | ----------------------------------------------------- |
+| Where tier lives | `localStorage` keyed by wallet pubkey                          | On-chain subscription program *or* signed JWT         |
+| Expiry check     | 30-day timestamp in `predictflow_tier_expires_<pubkey>`        | Same, but server-attested                             |
+| Per-device sync  | None — clear local data, lose tier                             | On-chain or server-side, follows the wallet           |
+| Receipt          | Local fee log entry (`kind: 'subscription'`)                   | On-chain tx + invoice                                 |
+
+`getUserTier(pubkey)` enforces expiry on read and downgrades a lapsed
+sub back to Free. The `useUserTier` hook re-reads on a custom
+`predictflow:tier-change` event so all components in the same tab sync
+without polling.
+
+### Configuration
+
+The only required env var is `VITE_FEE_WALLET` — the Solana pubkey that
+receives platform swap fees and subscription payments. When unset (or
+left at the placeholder `PredictFLowFeeWa11etConfigureMeP1ease111111`):
+
+- Trade flow records the *intended* fee in `predictflow_fee_log` with
+  `feeStatus: 'failed'` and a "fee wallet not configured" reason.
+- The pricing modal surfaces a clear demo-mode banner.
+- The admin revenue dashboard still shows aggregated would-be revenue
+  so judges/stakeholders can see the model without a real wallet.
+
+This makes the system safe to demo without touching real funds.
+
+### Admin revenue dashboard
+
+Hidden page at `/#/admin/revenue`. Authorization rule:
+
+- If `VITE_FEE_WALLET` is configured: only the connected wallet that
+  matches `FEE_CONFIG.FEE_WALLET` can view real numbers.
+- If unconfigured (demo): any connected wallet sees the dashboard with
+  a "demo mode" banner overlay.
+
+Stats come from `predictflow_fee_log` (capped to 1000 entries, oldest
+roll off):
+
+- Total fees, today / week / month
+- Trade count + average fee per trade
+- Tier distribution (% of trades by tier)
+- Recent events table with status (`sent` / `failed` / `subscription`)
+
+There's a **Clear log** button — destructive, no confirmation. Don't
+expose the route publicly in prod without locking it to a server-side
+auth check; the client-side wallet check is a soft gate, not a security
+boundary.
+
+### UI surfaces
+
+| Component / page                       | File                                                            | Purpose                                                          |
+| -------------------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `FeeBreakdown`                         | `src/components/monetization/FeeBreakdown.jsx`                  | Pre-trade transparency block in TradePanel quote area            |
+| `TierBadge`                            | `src/components/monetization/TierBadge.jsx`                     | Free/Pro/Whale chip in header (click → opens pricing)            |
+| `UpgradeModal`                         | `src/components/monetization/UpgradeModal.jsx`                  | Pays monthly subscription via SPL USDC transfer                  |
+| `UpgradeNudge`                         | `src/components/monetization/UpgradeNudge.jsx`                  | Inline + lock-overlay variants for contextual upsells            |
+| `PricingCards`, `PricingPage`          | `src/components/monetization/PricingCards.jsx`, `src/pages/PricingPage.jsx` | Three-tier comparison + FAQ at `/#/pricing`                |
+| `ReferralSection`                      | `src/components/monetization/ReferralSection.jsx`               | Invite link + earnings stats inside Portfolio                    |
+| `FeeDisclosure`                        | `src/components/monetization/FeeDisclosure.jsx`                 | Footer transparency line on Explore + Pricing                    |
+| `AdminRevenuePage`                     | `src/pages/AdminRevenuePage.jsx`                                | `/#/admin/revenue` ops dashboard                                 |
+
+### Hooks & services
+
+| Module                                   | Role                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------ |
+| `src/services/feeService.js`             | `calculateFee`, `getUserTier`, `setUserTier`, tier gates                 |
+| `src/services/referralService.js`        | Capture `?ref=`, registry, earnings, self-referral filter                |
+| `src/lib/feeTransfer.js`                 | SPL Transfer + ATA helpers, fee-sweep transaction builder                |
+| `src/lib/feeLog.js`                      | Append-only fee event log + summarizer                                   |
+| `src/hooks/useUserTier.js`               | Subscribes to `predictflow:tier-change` for cross-component sync         |
+| `src/hooks/useReferral.js`               | Exposes connected wallet's code, link, stats, active referrer            |
+| `src/hooks/useUpgradeModal.jsx`          | Single top-level modal so any nudge can `open(tier)` without prop drill  |
+
+### Tier gating in code
+
+```js
+import { canUseDCA, canCreateConditionalOrder } from '../services/feeService'
+
+// DCA tab — Free tier sees a locked overlay instead of the form
+if (!canUseDCA(tier)) return <UpgradeNudge variant="lock" … />
+
+// Limit / SL / TP form — Free tier can place 1 active order
+const { allowed, reason } = canCreateConditionalOrder(tier, pendingOrders.length)
+if (!allowed) return <UpgradeNudge tone="yellow" message={reason} … />
+```
+
+---
+
 ## localStorage schema
 
 Single source of truth. Keep this table up to date — add a row when you
 introduce a new client-persistent key.
 
-| Key                               | Schema version | Purpose                                                                          |
-| --------------------------------- | -------------- | -------------------------------------------------------------------------------- |
-| `predictflow_markets_cache`       | 2              | 60s events/markets cache                                                         |
-| `predictflow_conditional_orders`  | 2              | Pending / filled / cancelled limit/SL/TP orders                                  |
-| `predictflow_dca_strategies`      | 2              | Active / completed / cancelled DCA strategies + execution history                |
-| `predictflow_positions`           | 2              | Filled trade positions (gates SL/TP tabs in TradePanel)                          |
-| `predictflow_wallet`              | —              | Restored wallet pubkey on reload                                                 |
-| `predictflow_wallet_id`           | —              | Restored wallet adapter id (`phantom` / `solflare` / `backpack`)                 |
-| `predictflow_kyc_status`          | —              | `unverified` / `pending` / `verified`                                            |
-| `predictflow_storage_version`     | —              | Migration tracker; `runMigrations()` runs on app boot                            |
+| Key                                       | Schema version | Purpose                                                                          |
+| ----------------------------------------- | -------------- | -------------------------------------------------------------------------------- |
+| `predictflow_markets_cache`               | 2              | 60s events/markets cache                                                         |
+| `predictflow_conditional_orders`          | 2              | Pending / filled / cancelled limit/SL/TP orders                                  |
+| `predictflow_dca_strategies`              | 2              | Active / completed / cancelled DCA strategies + execution history                |
+| `predictflow_positions`                   | 2              | Filled trade positions (gates SL/TP tabs in TradePanel)                          |
+| `predictflow_wallet`                      | —              | Restored wallet pubkey on reload                                                 |
+| `predictflow_wallet_id`                   | —              | Restored wallet adapter id (`phantom` / `solflare` / `backpack`)                 |
+| `predictflow_kyc_status`                  | —              | `unverified` / `pending` / `verified`                                            |
+| `predictflow_storage_version`             | —              | Migration tracker; `runMigrations()` runs on app boot                            |
+| `predictflow_tier_<pubkey>`               | —              | Active tier (`PRO` / `WHALE`) for that wallet                                    |
+| `predictflow_tier_expires_<pubkey>`       | —              | Subscription expiry timestamp (ms since epoch); read-time downgrade if past      |
+| `predictflow_referrer`                    | —              | First-seen `?ref=` code (sticky for this device)                                 |
+| `predictflow_referral_registry`           | —              | `{ [code]: pubkey }` map populated when wallets connect                          |
+| `predictflow_referral_earnings`           | —              | `{ [pubkey]: { earned, count } }` accumulating referral payouts                  |
+| `predictflow_fee_log`                     | —              | Append-only fee/subscription event log (capped at 1000)                          |
 
 ---
 
@@ -401,6 +574,12 @@ Pages), set the same names in the dashboard.
 | --- | --- | --- |
 | `VITE_ALLOW_SYNTHESIZED_MINTS` | `false` | When `true`, trading panel fakes YES/NO mints for markets without real ones. Real swaps cannot route — demo/test only. |
 | `VITE_ALLOW_SIMULATED_FILLS` | `false` | When `true`, a DFlow `/order` failure is treated as a simulated fill. **Never enable for real money.** |
+
+### Monetization
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `VITE_FEE_WALLET` | *placeholder (`PredictFLowFeeWa11etConfigureMeP1ease111111`)* | Solana pubkey that receives platform swap fees and tier subscription payments. When unset, fee transfers are skipped and the admin dashboard shows "recorded intent" only — safe for demos. **Required for on-chain revenue.** See [Monetization & fees](#monetization--fees). |
 
 ### Legal
 
@@ -529,6 +708,9 @@ Before flipping any prod switch:
       should return nothing.
 - [ ] Legal copy (`VITE_TERMS_URL`, `VITE_RISK_URL`, etc.) points to real
       pages.
+- [ ] `VITE_FEE_WALLET` set to a Solana pubkey you control (not the
+      placeholder). Confirm a $1 trade in preview triggers a second
+      signed tx that sweeps the fee — see [Monetization & fees](#monetization--fees).
 
 > **Note on non-Cloudflare hosts.** The repo's primary deployment target
 > is Cloudflare Pages — the `functions/api/dflow*` Pages Functions
@@ -727,6 +909,7 @@ as **Secret**; everything else can be a plain variable.
 | `VITE_ANALYTICS_HOST` | *(optional, self-hosted PostHog)* |
 | `VITE_ALLOW_SYNTHESIZED_MINTS` | `false` — **do not override in prod** |
 | `VITE_ALLOW_SIMULATED_FILLS` | `false` — **do not override in prod** |
+| `VITE_FEE_WALLET` | `<your Solana pubkey>` — receives swap fees and subscription payments. Leave unset only for revenue-disabled demos. |
 | `VITE_TERMS_URL` | `https://yourdomain.com/terms` |
 | `VITE_PRIVACY_URL` | `https://yourdomain.com/privacy` |
 | `VITE_RISK_URL` | `https://yourdomain.com/risk` |
@@ -988,7 +1171,7 @@ If any step fails the user sees an explicit error, never the signing prompt.
 
 ## Testing
 
-Vitest + jsdom. 56 tests across 12 files as of last snapshot.
+Vitest + jsdom. 103 tests across 15 files as of last snapshot.
 
 ```bash
 npm test                         # all tests, one-shot
@@ -1042,6 +1225,18 @@ runs when `VITE_ALLOW_SIMULATED_FILLS=true`.)
 By design — everything runs in the browser. There's a persistent banner
 reminding the user. A real deployment needs a server-side scheduler to
 execute orders while users are offline.
+
+**Trade signs but no fee transfer pops up.**
+Either `VITE_FEE_WALLET` isn't set (placeholder ⇒ fee transfer is
+skipped by design — check `predictflow_fee_log` for `feeStatus: 'failed'`
+entries), or the wallet rejected the second signing prompt. Both are
+recoverable: the swap already settled. Set `VITE_FEE_WALLET` and retry,
+or check the admin revenue page at `/#/admin/revenue` for the event.
+
+**Pricing modal shows "Subscription wallet not configured".**
+Same root cause — `VITE_FEE_WALLET` is unset or still on the placeholder.
+Set it to your Solana pubkey, redeploy, and the upgrade flow will accept
+real USDC payments.
 
 **Build is over budget in CI.**
 `npm run size` enforces per-chunk gzipped budgets in

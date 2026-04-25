@@ -11,6 +11,7 @@ import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 import ActiveOrders from './ActiveOrders'
 import Skeleton from './Skeleton'
+import ReferralSection from './monetization/ReferralSection'
 
 function daysUntil(iso) {
   if (!iso) return null
@@ -375,6 +376,8 @@ export default function Portfolio() {
       )}
 
       <DcaStrategiesSection strategies={dcaStrategies} onStop={stopStrategy} />
+
+      <ReferralSection />
 
       <div>
         <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider mb-2">

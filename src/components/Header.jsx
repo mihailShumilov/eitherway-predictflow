@@ -1,19 +1,23 @@
 import React, { useState } from 'react'
-import { Activity, RefreshCw, Wifi, WifiOff, LayoutGrid, Wallet, Info } from 'lucide-react'
+import { Activity, RefreshCw, Wifi, WifiOff, LayoutGrid, Wallet, Info, Sparkles } from 'lucide-react'
 import WalletButton from './WalletButton'
 import SearchBar from './SearchBar'
 import AboutModal from './AboutModal'
+import TierBadge from './monetization/TierBadge'
 import { useMarkets } from '../hooks/useMarkets'
 import { useHealth } from '../hooks/useHealth'
+import { useWallet } from '../hooks/useWallet'
 
 const NAV_ITEMS = [
   { id: 'explore', label: 'Explore', icon: LayoutGrid },
   { id: 'portfolio', label: 'Portfolio', icon: Wallet },
+  { id: 'pricing', label: 'Pricing', icon: Sparkles },
 ]
 
 export default function Header({ page, onPageChange }) {
   const { usingMockData, allMarkets, refresh, loading } = useMarkets()
   const { dflow: dflowOk, rpc: rpcOk } = useHealth()
+  const { connected } = useWallet()
   const [aboutOpen, setAboutOpen] = useState(false)
   const anyDegraded = dflowOk === false || rpcOk === false
 
@@ -114,6 +118,9 @@ export default function Header({ page, onPageChange }) {
           >
             <Info size={16} />
           </button>
+          {connected && (
+            <TierBadge onClick={() => onPageChange?.('pricing')} />
+          )}
           <WalletButton />
         </div>
       </div>

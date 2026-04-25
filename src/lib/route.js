@@ -10,7 +10,7 @@
 //   "#/market/<ticker>"                    → { page: 'explore', marketTicker }
 //   "#/market/<ticker>?side=yes"           → { ..., side: 'yes' }
 
-const VALID_PAGES = new Set(['explore', 'portfolio'])
+const VALID_PAGES = new Set(['explore', 'portfolio', 'pricing', 'admin-revenue'])
 const VALID_SIDES = new Set(['yes', 'no'])
 
 export function parseHash(hash) {
@@ -20,6 +20,11 @@ export function parseHash(hash) {
   const [path, queryStr = ''] = raw.split('?')
   const segments = path.split('/').filter(Boolean)
   const params = new URLSearchParams(queryStr)
+
+  // /admin/revenue → admin-revenue page (kept hidden from main nav)
+  if (segments[0] === 'admin' && segments[1] === 'revenue') {
+    return { page: 'admin-revenue' }
+  }
 
   if (segments[0] === 'market' && segments[1]) {
     const route = { page: 'explore', marketTicker: decodeURIComponent(segments[1]) }
@@ -59,6 +64,7 @@ export function formatHash({ page = 'explore', marketTicker, side, category, sub
     const head = `#/category/${encodeURIComponent(category)}`
     return subcategory ? `${head}/${encodeURIComponent(subcategory)}` : head
   }
+  if (page === 'admin-revenue') return '#/admin/revenue'
   if (VALID_PAGES.has(page) && page !== 'explore') return `#/${page}`
   return '#/'
 }
