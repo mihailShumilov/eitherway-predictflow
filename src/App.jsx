@@ -1,4 +1,4 @@
-import React, { useMemo, Suspense, lazy } from 'react'
+import React, { useMemo, useEffect, Suspense, lazy } from 'react'
 import { MarketsProvider, useMarkets } from './hooks/useMarkets'
 import { useRoute } from './hooks/useRoute'
 import { WalletProvider } from './hooks/useWallet'
@@ -81,8 +81,14 @@ function OrderNotifications() {
 }
 
 function AppLayout() {
-  const { allMarkets } = useMarkets()
-  const { page, marketTicker, side, navigate } = useRoute()
+  const { allMarkets, setSelectedCategory, setSelectedSubcategory } = useMarkets()
+  const { page, marketTicker, side, category, subcategory, navigate } = useRoute()
+
+  // URL is source of truth for category selection — sync to provider state.
+  useEffect(() => {
+    setSelectedCategory(category || 'All')
+    setSelectedSubcategory(subcategory || '')
+  }, [category, subcategory, setSelectedCategory, setSelectedSubcategory])
 
   const selectedMarket = useMemo(() => {
     if (!marketTicker) return null
@@ -93,9 +99,9 @@ function AppLayout() {
 
   const handleSelectMarket = (m) => {
     if (!m?.ticker) return
-    navigate({ marketTicker: m.ticker, side: m.side })
+    navigate({ marketTicker: m.ticker, side: m.side, category, subcategory })
   }
-  const handleCloseMarket = () => navigate({ page })
+  const handleCloseMarket = () => navigate({ page, category, subcategory })
   const handlePageChange = (p) => navigate({ page: p })
 
   return (

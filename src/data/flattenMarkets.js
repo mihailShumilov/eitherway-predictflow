@@ -14,6 +14,7 @@ export function flattenMarkets(events) {
         eventTicker: event.ticker || event.id,
         category: event.category,
         subcategory: event.subcategory,
+        tags: event.tags || [],
         closeTime: event.closeTime,
       })
     }

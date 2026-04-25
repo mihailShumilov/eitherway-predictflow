@@ -41,6 +41,28 @@ describe('parseHash', () => {
   it('falls back to explore for unknown pages', () => {
     expect(parseHash('#/nope')).toEqual({ page: 'explore' })
   })
+
+  it('parses category', () => {
+    expect(parseHash('#/category/Sports')).toEqual({
+      page: 'explore',
+      category: 'Sports',
+    })
+  })
+
+  it('parses category with subcategory', () => {
+    expect(parseHash('#/category/Sports/Soccer')).toEqual({
+      page: 'explore',
+      category: 'Sports',
+      subcategory: 'Soccer',
+    })
+  })
+
+  it('decodes encoded category names with spaces', () => {
+    expect(parseHash('#/category/Climate%20and%20Weather')).toEqual({
+      page: 'explore',
+      category: 'Climate and Weather',
+    })
+  })
 })
 
 describe('formatHash', () => {
@@ -65,12 +87,29 @@ describe('formatHash', () => {
     expect(formatHash({ marketTicker: 'X', side: 'maybe' })).toBe('#/market/X')
   })
 
+  it('formats category', () => {
+    expect(formatHash({ category: 'Sports' })).toBe('#/category/Sports')
+  })
+
+  it('formats category + subcategory', () => {
+    expect(formatHash({ category: 'Sports', subcategory: 'Soccer' })).toBe(
+      '#/category/Sports/Soccer',
+    )
+  })
+
+  it('treats All category as root', () => {
+    expect(formatHash({ category: 'All' })).toBe('#/')
+  })
+
   it('round-trips', () => {
     const cases = [
       { page: 'explore' },
       { page: 'portfolio' },
       { page: 'explore', marketTicker: 'A-B-C' },
       { page: 'explore', marketTicker: 'A-B-C', side: 'yes' },
+      { page: 'explore', category: 'Sports' },
+      { page: 'explore', category: 'Sports', subcategory: 'Soccer' },
+      { page: 'explore', category: 'Climate and Weather' },
     ]
     for (const c of cases) {
       expect(parseHash(formatHash(c))).toEqual(c)

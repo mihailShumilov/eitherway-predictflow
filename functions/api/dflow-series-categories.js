@@ -48,10 +48,15 @@ export async function onRequest({ request, env }) {
     return json({ error: 'upstream parse failed' }, 502)
   }
 
+  // Compact shape: { TICKER: ["Category", "tag1", "tag2", ...] }. The first
+  // entry is the category; remaining entries are tags (used for subcategory
+  // filtering). Empty-tag series collapse to a single-element array.
   const series = Array.isArray(body) ? body : body?.series || []
   const lookup = {}
   for (const s of series) {
-    if (s?.ticker && s?.category) lookup[s.ticker] = s.category
+    if (!s?.ticker || !s?.category) continue
+    const tags = Array.isArray(s.tags) ? s.tags : []
+    lookup[s.ticker] = [s.category, ...tags]
   }
 
   const out = new Response(JSON.stringify(lookup), {

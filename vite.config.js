@@ -34,7 +34,9 @@ function dflowSeriesCategoriesDevPlugin({ upstream, authHeaders }) {
     const series = Array.isArray(body) ? body : body?.series || []
     const lookup = {}
     for (const s of series) {
-      if (s?.ticker && s?.category) lookup[s.ticker] = s.category
+      if (!s?.ticker || !s?.category) continue
+      const tags = Array.isArray(s.tags) ? s.tags : []
+      lookup[s.ticker] = [s.category, ...tags]
     }
     cache = { t: Date.now(), body: lookup }
     return lookup

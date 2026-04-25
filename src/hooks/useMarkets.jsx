@@ -40,6 +40,7 @@ export function MarketsProvider({ children }) {
   const [usingMockData, setUsingMockData] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('All')
+  const [selectedSubcategory, setSelectedSubcategory] = useState('')
   const [sortBy, setSortBy] = useState('volume')
 
   const fetchEvents = useCallback(async () => {
@@ -66,8 +67,9 @@ export function MarketsProvider({ children }) {
       if (!eventsRes.ok) throw new Error(`Events API: ${eventsRes.status}`)
 
       // DFlow events lack category metadata; join through seriesTicker against
-      // the slim lookup served by /api/dflow-series-categories. Missing or
-      // unmapped tickers fall back to 'Other'.
+      // the slim lookup served by /api/dflow-series-categories. Lookup shape:
+      // { TICKER: ["Category", "tag1", "tag2", ...] }. Missing or unmapped
+      // tickers fall back to 'Other' / no tags.
       let seriesLookup = {}
       if (seriesCatsRes && seriesCatsRes.ok) {
         try {
@@ -85,13 +87,19 @@ export function MarketsProvider({ children }) {
 
       const normalizedEvents = rawEvents.map((evt, i) => {
         const seriesTicker = evt.seriesTicker || evt.series_ticker
-        const seriesCategory = seriesTicker ? seriesLookup[seriesTicker] : undefined
+        const seriesEntry = (seriesTicker && Array.isArray(seriesLookup[seriesTicker]))
+          ? seriesLookup[seriesTicker]
+          : null
+        const seriesCategory = seriesEntry ? seriesEntry[0] : undefined
+        const seriesTags = seriesEntry ? seriesEntry.slice(1) : []
+        const tags = Array.isArray(evt.tags) && evt.tags.length ? evt.tags : seriesTags
         return {
         id: evt.id || `live-${i}`,
         ticker: evt.ticker || evt.eventTicker || evt.event_ticker || evt.slug || evt.id || `live-${i}`,
         title: evt.title || evt.name || evt.question || 'Untitled Event',
-        category: evt.category || seriesCategory || evt.tags?.[0] || 'Other',
-        subcategory: evt.subcategory || evt.tags?.[1] || '',
+        category: evt.category || seriesCategory || tags[0] || 'Other',
+        subcategory: evt.subcategory || tags[0] || '',
+        tags,
         status: evt.status || 'active',
         closeTime: evt.closeTime || evt.close_time || evt.endDate || new Date(Date.now() + 86400000).toISOString(),
         markets: (evt.markets || []).map((m, j) => ({
@@ -191,6 +199,7 @@ export function MarketsProvider({ children }) {
     const q = searchQuery.trim().toLowerCase()
     return markets
       .filter(m => selectedCategory === 'All' || m.category === selectedCategory)
+      .filter(m => !selectedSubcategory || (m.tags || []).includes(selectedSubcategory))
       .filter(m => {
         if (!q) return true
         return (
@@ -208,7 +217,7 @@ export function MarketsProvider({ children }) {
           default: return 0
         }
       })
-  }, [markets, selectedCategory, searchQuery, sortBy])
+  }, [markets, selectedCategory, selectedSubcategory, searchQuery, sortBy])
 
   return (
     <MarketsContext.Provider value={{
@@ -224,6 +233,8 @@ export function MarketsProvider({ children }) {
       searchMarkets,
       selectedCategory,
       setSelectedCategory,
+      selectedSubcategory,
+      setSelectedSubcategory,
       sortBy,
       setSortBy,
       refresh: fetchEvents,

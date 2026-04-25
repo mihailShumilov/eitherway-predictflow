@@ -1,6 +1,7 @@
 import React from 'react'
 import { LayoutGrid, Trophy, Landmark, Bitcoin, TrendingUp, ChevronRight } from 'lucide-react'
 import { useMarkets } from '../hooks/useMarkets'
+import { useRoute } from '../hooks/useRoute'
 
 const categoryIcons = {
   All: LayoutGrid,
@@ -19,13 +20,23 @@ const categoryColors = {
 }
 
 export default function CategorySidebar() {
-  const { categories, selectedCategory, setSelectedCategory, allMarkets } = useMarkets()
+  const { categories, selectedCategory, selectedSubcategory, allMarkets } = useMarkets()
+  const { navigate } = useRoute()
 
   const categoryList = ['All', ...Object.keys(categories).filter(c => c !== 'All')]
 
   const getCategoryCount = (cat) => {
     if (cat === 'All') return allMarkets.length
     return allMarkets.filter(m => m.category === cat).length
+  }
+
+  const goToCategory = (cat) => navigate({ category: cat })
+  const goToSubcategory = (sub) => {
+    if (sub === selectedSubcategory) {
+      navigate({ category: selectedCategory })
+    } else {
+      navigate({ category: selectedCategory, subcategory: sub })
+    }
   }
 
   return (
@@ -46,7 +57,7 @@ export default function CategorySidebar() {
             return (
               <button
                 key={cat}
-                onClick={() => setSelectedCategory(cat)}
+                onClick={() => goToCategory(cat)}
                 className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm transition-all duration-150 group ${
                   isActive
                     ? 'bg-terminal-highlight text-white'
@@ -72,14 +83,23 @@ export default function CategorySidebar() {
             <p className="text-xs text-terminal-muted">Select a category</p>
           ) : categories[selectedCategory]?.length ? (
             <div className="flex flex-wrap gap-1.5">
-              {categories[selectedCategory].map((sub) => (
-                <span
-                  key={sub}
-                  className="px-2 py-1 text-xs bg-terminal-card border border-terminal-border rounded text-terminal-muted hover:text-terminal-text hover:border-terminal-accent/50 cursor-pointer transition-all"
-                >
-                  {sub}
-                </span>
-              ))}
+              {categories[selectedCategory].map((sub) => {
+                const isActive = selectedSubcategory === sub
+                return (
+                  <button
+                    key={sub}
+                    type="button"
+                    onClick={() => goToSubcategory(sub)}
+                    className={`px-2 py-1 text-xs rounded border transition-all ${
+                      isActive
+                        ? 'bg-terminal-accent/15 border-terminal-accent/60 text-terminal-accent'
+                        : 'bg-terminal-card border-terminal-border text-terminal-muted hover:text-terminal-text hover:border-terminal-accent/50'
+                    }`}
+                  >
+                    {sub}
+                  </button>
+                )
+              })}
             </div>
           ) : (
             <p className="text-xs text-terminal-muted">No subcategories</p>
