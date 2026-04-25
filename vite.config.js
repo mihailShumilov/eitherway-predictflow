@@ -18,6 +18,47 @@ function excludeDevScriptsPlugin() {
   }
 }
 
+// Dev-only mirror of functions/api/dflow-series-categories.js — fetches the
+// heavy upstream /api/v1/series once per process and serves the slim
+// ticker→category lookup. In prod the Cloudflare Pages Function handles this.
+function dflowSeriesCategoriesDevPlugin({ upstream, authHeaders }) {
+  let cache = null
+  const cacheTtlMs = 3600 * 1000
+
+  async function load() {
+    if (cache && Date.now() - cache.t < cacheTtlMs) return cache.body
+    const target = `${upstream.replace(/\/+$/, '')}/api/v1/series`
+    const resp = await fetch(target, { headers: authHeaders || {} })
+    if (!resp.ok) throw new Error(`upstream ${resp.status}`)
+    const body = await resp.json()
+    const series = Array.isArray(body) ? body : body?.series || []
+    const lookup = {}
+    for (const s of series) {
+      if (s?.ticker && s?.category) lookup[s.ticker] = s.category
+    }
+    cache = { t: Date.now(), body: lookup }
+    return lookup
+  }
+
+  return {
+    name: 'predictflow:dflow-series-categories-dev',
+    configureServer(server) {
+      server.middlewares.use('/api/dflow-series-categories', async (req, res) => {
+        try {
+          const lookup = await load()
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.setHeader('cache-control', 'public, max-age=3600')
+          res.end(JSON.stringify(lookup))
+        } catch (err) {
+          res.statusCode = 502
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: 'upstream failed', detail: String(err?.message || err) }))
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   // Dev proxy targets read with `loadEnv(mode, cwd, '')` so non-VITE keys are
   // available. Same names as the Cloudflare Pages dashboard so .env stays
@@ -45,6 +86,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react({ jsxRuntime: 'automatic' }),
       excludeDevScriptsPlugin(),
+      dflowSeriesCategoriesDevPlugin({ upstream, authHeaders }),
     ],
     server: {
       watch: {

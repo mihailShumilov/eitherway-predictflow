@@ -68,7 +68,9 @@ export default function CategorySidebar() {
           <h3 className="text-xs font-semibold text-terminal-muted uppercase tracking-wider mb-2">
             Subcategories
           </h3>
-          {selectedCategory !== 'All' && categories[selectedCategory] ? (
+          {selectedCategory === 'All' ? (
+            <p className="text-xs text-terminal-muted">Select a category</p>
+          ) : categories[selectedCategory]?.length ? (
             <div className="flex flex-wrap gap-1.5">
               {categories[selectedCategory].map((sub) => (
                 <span
@@ -80,7 +82,7 @@ export default function CategorySidebar() {
               ))}
             </div>
           ) : (
-            <p className="text-xs text-terminal-muted">Select a category</p>
+            <p className="text-xs text-terminal-muted">No subcategories</p>
           )}
         </div>
       </div>

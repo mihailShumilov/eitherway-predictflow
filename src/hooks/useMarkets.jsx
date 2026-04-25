@@ -57,21 +57,40 @@ export function MarketsProvider({ children }) {
     }
 
     try {
-      const [eventsRes, catsRes] = await Promise.all([
+      const [eventsRes, catsRes, seriesCatsRes] = await Promise.all([
         fetchWithRetry(`${DFLOW_BASE}/api/v1/events?status=active&withNestedMarkets=true`),
         fetchWithRetry(`${DFLOW_BASE}/api/v1/tags_by_categories`),
+        fetch('/api/dflow-series-categories').catch(() => null),
       ])
 
       if (!eventsRes.ok) throw new Error(`Events API: ${eventsRes.status}`)
 
+      // DFlow events lack category metadata; join through seriesTicker against
+      // the slim lookup served by /api/dflow-series-categories. Missing or
+      // unmapped tickers fall back to 'Other'.
+      let seriesLookup = {}
+      if (seriesCatsRes && seriesCatsRes.ok) {
+        try {
+          const parsed = await seriesCatsRes.json()
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            seriesLookup = parsed
+          }
+        } catch {
+          // keep empty
+        }
+      }
+
       const eventsData = await eventsRes.json()
       const rawEvents = Array.isArray(eventsData) ? eventsData : (eventsData.data || eventsData.events || [])
 
-      const normalizedEvents = rawEvents.map((evt, i) => ({
+      const normalizedEvents = rawEvents.map((evt, i) => {
+        const seriesTicker = evt.seriesTicker || evt.series_ticker
+        const seriesCategory = seriesTicker ? seriesLookup[seriesTicker] : undefined
+        return {
         id: evt.id || `live-${i}`,
         ticker: evt.ticker || evt.eventTicker || evt.event_ticker || evt.slug || evt.id || `live-${i}`,
         title: evt.title || evt.name || evt.question || 'Untitled Event',
-        category: evt.category || evt.tags?.[0] || 'Other',
+        category: evt.category || seriesCategory || evt.tags?.[0] || 'Other',
         subcategory: evt.subcategory || evt.tags?.[1] || '',
         status: evt.status || 'active',
         closeTime: evt.closeTime || evt.close_time || evt.endDate || new Date(Date.now() + 86400000).toISOString(),
@@ -88,14 +107,22 @@ export function MarketsProvider({ children }) {
           liquidity: parseFloat(m.liquidity || 0),
           status: m.status || 'active',
         })),
-      }))
+        }
+      })
 
       let catsData = DEFAULT_CATEGORIES
       if (catsRes.ok) {
         try {
           const rawCats = await catsRes.json()
-          if (rawCats && typeof rawCats === 'object' && !Array.isArray(rawCats)) {
-            catsData = rawCats
+          // DFlow shape: { tagsByCategories: { Sports: [...], Social: null, ... } }
+          // Unwrap the envelope and coerce null subcategory lists to [].
+          const inner = rawCats && typeof rawCats === 'object' && !Array.isArray(rawCats)
+            ? (rawCats.tagsByCategories ?? rawCats)
+            : null
+          if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+            catsData = Object.fromEntries(
+              Object.entries(inner).map(([k, v]) => [k, Array.isArray(v) ? v : []])
+            )
           }
         } catch {
           // keep default
