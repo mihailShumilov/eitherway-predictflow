@@ -59,6 +59,33 @@ export function normalizeTrade(t, i = 0) {
   }
 }
 
+// DFlow nests outcome mints under `market.accounts[<collateralMint>]`, keyed
+// by settlement collateral; mainnet USDC is the production default. Older /
+// mock shapes still set top-level `yesMint`/`noMint`, so we probe that first.
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+
+export function extractOutcomeMints(m) {
+  if (!m || typeof m !== 'object') return { yesMint: null, noMint: null }
+
+  const flatYes = m.yesMint || m.yes_mint || m.yesTokenMint || m.yes_token_mint
+  const flatNo = m.noMint || m.no_mint || m.noTokenMint || m.no_token_mint
+  if (flatYes || flatNo) return { yesMint: flatYes || null, noMint: flatNo || null }
+
+  const accounts = m.accounts && typeof m.accounts === 'object' ? m.accounts : null
+  if (!accounts) return { yesMint: null, noMint: null }
+
+  const usdc = accounts[USDC_MINT]
+  if (usdc?.isInitialized && usdc.yesMint && usdc.noMint) {
+    return { yesMint: usdc.yesMint, noMint: usdc.noMint }
+  }
+  for (const a of Object.values(accounts)) {
+    if (a?.isInitialized && a.yesMint && a.noMint) {
+      return { yesMint: a.yesMint, noMint: a.noMint }
+    }
+  }
+  return { yesMint: null, noMint: null }
+}
+
 // market/by-mint response normalizer.
 // Callers pass `mint` so we can infer which outcome (yes/no) the user holds.
 export function normalizeMarket(payload, mint) {
@@ -66,8 +93,7 @@ export function normalizeMarket(payload, mint) {
   const m = payload.market || payload.data || payload
   const event = payload.event || m.event || {}
 
-  const yesMint = m.yesMint || m.yes_mint || m.yesTokenMint || null
-  const noMint = m.noMint || m.no_mint || m.noTokenMint || null
+  const { yesMint, noMint } = extractOutcomeMints(m)
   let side = null
   if (yesMint && yesMint === mint) side = 'yes'
   else if (noMint && noMint === mint) side = 'no'

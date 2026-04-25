@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, createContext, useCon
 import { flattenMarkets } from '../data/flattenMarkets'
 import { DFLOW_PROXY_BASE } from '../config/env'
 import { fetchWithRetry } from '../lib/http'
+import { extractOutcomeMints } from '../lib/normalize'
 import { safeGet, safeSet } from '../lib/storage'
 
 // Lazy-loaded mock data. Only imported if the DFlow API fails — keeps
@@ -77,8 +78,7 @@ export function MarketsProvider({ children }) {
         markets: (evt.markets || []).map((m, j) => ({
           id: m.id || `live-mkt-${i}-${j}`,
           ticker: m.ticker || m.marketTicker || m.market_ticker || m.id || `live-mkt-${i}-${j}`,
-          yesMint: m.yesMint || m.yes_mint || m.yesTokenMint || m.yes_token_mint || null,
-          noMint: m.noMint || m.no_mint || m.noTokenMint || m.no_token_mint || null,
+          ...extractOutcomeMints(m),
           question: m.question || m.title || m.name || evt.title || 'Market',
           yesAsk: parseFloat(m.yesAsk || m.yes_ask || m.yesPrice || 0.5),
           noAsk: parseFloat(m.noAsk || m.no_ask || m.noPrice || 0.5),
