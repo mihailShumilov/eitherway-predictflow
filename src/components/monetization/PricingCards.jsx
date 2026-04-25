@@ -3,6 +3,22 @@ import { Check, Crown, Sparkles, Star } from 'lucide-react'
 import { FEE_CONFIG } from '../../config/fees'
 import { useUserTier } from '../../hooks/useUserTier'
 
+const FREE_BPS = FEE_CONFIG.TIERS.FREE.swapFeeBps
+const PRO_BPS = FEE_CONFIG.TIERS.PRO.swapFeeBps
+const WHALE_BPS = FEE_CONFIG.TIERS.WHALE.swapFeeBps
+
+// Discounts are derived from the live config so the copy can never drift
+// out of sync with the actual fee charged. If swapFeeBps changes, the
+// "X% off" text updates automatically — silent UI/charge mismatch is the
+// last thing we want in monetary copy.
+function discountVsFree(bps) {
+  if (FREE_BPS <= 0) return 0
+  return Math.round((1 - bps / FREE_BPS) * 100)
+}
+
+const PRO_DISCOUNT_LABEL = discountVsFree(PRO_BPS) > 0 ? ` (${discountVsFree(PRO_BPS)}% off)` : ''
+const WHALE_DISCOUNT_LABEL = discountVsFree(WHALE_BPS) > 0 ? ` (${discountVsFree(WHALE_BPS)}% off)` : ''
+
 const TIERS = [
   {
     key: 'FREE',
@@ -14,7 +30,7 @@ const TIERS = [
       'Live market data + charts',
       '1 active conditional order',
       'Standard execution',
-      `${FEE_CONFIG.TIERS.FREE.swapFeeBps / 100}% trading fee`,
+      `${FREE_BPS / 100}% trading fee`,
     ],
     cta: 'Current Plan',
     disabled: true,
@@ -31,7 +47,7 @@ const TIERS = [
       'Everything in Free',
       'Up to 10 conditional orders',
       'DCA strategies',
-      `${FEE_CONFIG.TIERS.PRO.swapFeeBps / 100}% trading fee (50% off)`,
+      `${PRO_BPS / 100}% trading fee${PRO_DISCOUNT_LABEL}`,
       'Priority support',
     ],
     cta: 'Upgrade to Pro',
@@ -47,7 +63,7 @@ const TIERS = [
     features: [
       'Everything in Pro',
       'Unlimited conditional orders',
-      `${FEE_CONFIG.TIERS.WHALE.swapFeeBps / 100}% trading fee`,
+      `${WHALE_BPS / 100}% trading fee${WHALE_DISCOUNT_LABEL}`,
       'Priority execution',
     ],
     cta: 'Upgrade to Whale',

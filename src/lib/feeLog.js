@@ -5,6 +5,7 @@ import { safeGet, safeSet } from './storage'
 
 const KEY = 'predictflow_fee_log'
 const MAX_ENTRIES = 1000
+export const FEE_LOG_EVENT = 'predictflow:fee-log-update'
 
 export function logFeeEvent(entry) {
   const log = safeGet(KEY, [])
@@ -15,6 +16,11 @@ export function logFeeEvent(entry) {
   })
   while (arr.length > MAX_ENTRIES) arr.shift()
   safeSet(KEY, arr)
+  // 'storage' only fires cross-tab, so same-tab listeners (e.g. the admin
+  // revenue page open in another route) need an explicit nudge.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(FEE_LOG_EVENT))
+  }
 }
 
 export function getFeeLog() {
@@ -24,6 +30,9 @@ export function getFeeLog() {
 
 export function clearFeeLog() {
   safeSet(KEY, [])
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(FEE_LOG_EVENT))
+  }
 }
 
 export function summarizeFeeLog(log) {

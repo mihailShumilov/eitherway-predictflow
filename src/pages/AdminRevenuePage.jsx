@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { DollarSign, BarChart3, TrendingUp, Users, Lock, AlertCircle } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
-import { getFeeLog, summarizeFeeLog, clearFeeLog } from '../lib/feeLog'
+import { getFeeLog, summarizeFeeLog, clearFeeLog, FEE_LOG_EVENT } from '../lib/feeLog'
 import { FEE_CONFIG, isFeeWalletConfigured } from '../config/fees'
 
 // Hidden ops view — only the fee wallet operator (or anyone using the same
@@ -14,8 +14,14 @@ export default function AdminRevenuePage() {
   useEffect(() => {
     setLog(getFeeLog())
     const handler = () => setLog(getFeeLog())
+    // 'storage' fires cross-tab; FEE_LOG_EVENT covers the same-tab case where
+    // a trade is placed while the dashboard is open in another route.
     window.addEventListener('storage', handler)
-    return () => window.removeEventListener('storage', handler)
+    window.addEventListener(FEE_LOG_EVENT, handler)
+    return () => {
+      window.removeEventListener('storage', handler)
+      window.removeEventListener(FEE_LOG_EVENT, handler)
+    }
   }, [])
 
   const summary = useMemo(() => summarizeFeeLog(log), [log])

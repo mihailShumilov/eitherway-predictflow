@@ -23,6 +23,7 @@ import { recordReferralEarning } from '../services/referralService'
 import { FEE_CONFIG, isFeeWalletConfigured } from '../config/fees'
 import { buildFeeTransferTransaction } from '../lib/feeTransfer'
 import { logFeeEvent } from '../lib/feeLog'
+import { maskWallet } from '../lib/privacy'
 import { emitReferralUpdate } from './useReferral'
 
 function getRealMint(market, side) {
@@ -44,6 +45,30 @@ function getTokenMint(market, side) {
 // reopening the trade panel while a submit is still pending cannot double-spend.
 const submissionLocks = new Set()
 
+// Cooldown for the fee-sweep tx. If sweep keeps failing (wrong fee wallet,
+// RPC down, user repeatedly rejecting the second prompt) we'd otherwise pop
+// a wallet popup on every market trade. After SWEEP_FAILURE_THRESHOLD
+// consecutive failures we cool down for SWEEP_COOLDOWN_MS; success resets.
+const SWEEP_FAILURE_THRESHOLD = 3
+const SWEEP_COOLDOWN_MS = 5 * 60 * 1000
+const sweepState = { consecutiveFailures: 0, cooldownUntil: 0 }
+
+function isSweepInCooldown(now = Date.now()) {
+  return sweepState.cooldownUntil > now
+}
+
+function recordSweepFailure(now = Date.now()) {
+  sweepState.consecutiveFailures++
+  if (sweepState.consecutiveFailures >= SWEEP_FAILURE_THRESHOLD) {
+    sweepState.cooldownUntil = now + SWEEP_COOLDOWN_MS
+  }
+}
+
+function recordSweepSuccess() {
+  sweepState.consecutiveFailures = 0
+  sweepState.cooldownUntil = 0
+}
+
 // Pull the platform (and optional referrer) fee out of the user's USDC ATA
 // after the swap settled. Skipped when the fee wallet is the placeholder
 // (no real recipient configured) — caller still records the event in the
@@ -55,18 +80,25 @@ async function sweepFee({ address, activeWallet, feeCalc, referrer }) {
   const provider = activeWallet?.getProvider?.()
   if (!provider) throw new Error('Wallet provider unavailable for fee transfer')
 
+  // Math.floor a tiny fee (e.g. $0.0001 platform share with a referrer split)
+  // can produce 0 lamports. A 0-amount transfer is a no-op, but its companion
+  // ATA-create instruction is not — pruning here keeps the tx tight and avoids
+  // surfacing nonsense entries in the admin dashboard.
+  const platformLamports = Math.floor(feeCalc.platformAmount * 1e6)
+  const referralLamports = Math.floor(feeCalc.referralAmount * 1e6)
+
   const transfers = []
-  if (feeCalc.platformAmount > 0) {
+  if (platformLamports > 0) {
     transfers.push({
       toPubkey: FEE_CONFIG.FEE_WALLET,
-      amountLamports: Math.floor(feeCalc.platformAmount * 1e6),
+      amountLamports: platformLamports,
       label: 'platform',
     })
   }
-  if (feeCalc.referralAmount > 0 && referrer) {
+  if (referralLamports > 0 && referrer) {
     transfers.push({
       toPubkey: referrer,
-      amountLamports: Math.floor(feeCalc.referralAmount * 1e6),
+      amountLamports: referralLamports,
       label: 'referrer',
     })
   }
@@ -286,18 +318,28 @@ export function useTradeSubmit(market) {
       let feeStatus = 'skipped'
       let feeError = null
       if (txSigned && feeCalc.feeAmount > 0) {
-        try {
-          await sweepFee({
-            address,
-            activeWallet,
-            feeCalc,
-            referrer,
-          })
-          feeStatus = 'sent'
-        } catch (err) {
-          feeStatus = 'failed'
-          feeError = safeErrorMessage(err, 'Fee transfer failed')
-          reportError(err, { context: 'feeTransfer', marketId: market.id })
+        if (isSweepInCooldown()) {
+          // Repeated failures suggest a misconfigured fee wallet or a user
+          // who keeps rejecting the second prompt. Skip sweeping until the
+          // cooldown elapses so we don't pop the wallet on every trade.
+          feeStatus = 'rate-limited'
+          feeError = 'Fee transfer skipped — too many consecutive failures, retrying later'
+        } else {
+          try {
+            await sweepFee({
+              address,
+              activeWallet,
+              feeCalc,
+              referrer,
+            })
+            feeStatus = 'sent'
+            recordSweepSuccess()
+          } catch (err) {
+            feeStatus = 'failed'
+            feeError = safeErrorMessage(err, 'Fee transfer failed')
+            recordSweepFailure()
+            reportError(err, { context: 'feeTransfer', marketId: market.id })
+          }
         }
       }
 
@@ -310,7 +352,7 @@ export function useTradeSubmit(market) {
         feeBps: feeCalc.feeBps,
         platformAmount: feeCalc.platformAmount,
         referralAmount: feeCalc.referralAmount,
-        referrer: referrer || null,
+        referrer: referrer ? maskWallet(referrer) : null,
         tier,
         feeStatus,
         txSigned,

@@ -14,6 +14,15 @@ const REFERRER_KEY = 'predictflow_referrer'
 const REGISTRY_KEY = 'predictflow_referral_registry'
 const EARNINGS_KEY = 'predictflow_referral_earnings'
 
+// Codes are pubkey prefixes, so they must look like base58 (Solana's
+// alphabet — no 0, O, I, l). Length 4–16 spans short demo codes through
+// the full 8-char default with a generous upper bound.
+const REFERRAL_CODE_RE = /^[1-9A-HJ-NP-Za-km-z]{4,16}$/
+
+export function isValidReferralCode(code) {
+  return typeof code === 'string' && REFERRAL_CODE_RE.test(code)
+}
+
 export function generateReferralCode(walletPubkey) {
   if (!walletPubkey) return ''
   return walletPubkey.slice(0, 8)
@@ -28,12 +37,15 @@ export function getReferralLink(code) {
 
 // Run once on app boot — captures ?ref= the first time a visitor lands.
 // Subsequent visits don't overwrite so a referrer is "sticky" for that browser.
+// Invalid shapes are dropped silently — an attacker can't plant arbitrary
+// strings (including very long ones) in localStorage via the URL.
 export function captureReferralFromUrl() {
   if (typeof window === 'undefined') return null
   try {
     const urlParams = new URLSearchParams(window.location.search)
     const ref = urlParams.get('ref')
     if (!ref) return safeGet(REFERRER_KEY, null)
+    if (!isValidReferralCode(ref)) return safeGet(REFERRER_KEY, null)
     const existing = safeGet(REFERRER_KEY, null)
     if (existing) return existing
     safeSet(REFERRER_KEY, ref)
@@ -51,17 +63,24 @@ export function clearReferrer() {
   try { localStorage.removeItem(REFERRER_KEY) } catch { /* ignore */ }
 }
 
+// Registers the connecting wallet's code → pubkey mapping. If the slot is
+// already claimed by a different pubkey we leave it alone — first-write wins.
+// Otherwise a vanity prefix collision would let the second wallet steal all
+// future referral payouts addressed to the first wallet's code.
 export function registerReferralCode(walletPubkey) {
   if (!walletPubkey) return
   const code = generateReferralCode(walletPubkey)
+  if (!isValidReferralCode(code)) return
   const registry = safeGet(REGISTRY_KEY, {}) || {}
-  if (registry[code] === walletPubkey) return
+  const existing = registry[code]
+  if (existing === walletPubkey) return
+  if (existing && existing !== walletPubkey) return
   registry[code] = walletPubkey
   safeSet(REGISTRY_KEY, registry)
 }
 
 export function resolveReferrerWallet(code) {
-  if (!code) return null
+  if (!isValidReferralCode(code)) return null
   const registry = safeGet(REGISTRY_KEY, {}) || {}
   return registry[code] || null
 }

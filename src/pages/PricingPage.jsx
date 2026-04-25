@@ -1,9 +1,8 @@
-import React, { useState } from 'react'
+import React from 'react'
 import { Sparkles, Shield, Zap } from 'lucide-react'
 import PricingCards from '../components/monetization/PricingCards'
-import UpgradeModal from '../components/monetization/UpgradeModal'
 import FeeDisclosure from '../components/monetization/FeeDisclosure'
-import { useUserTier } from '../hooks/useUserTier'
+import { useUpgradeModal } from '../hooks/useUpgradeModal'
 
 const FAQ = [
   {
@@ -24,9 +23,11 @@ const FAQ = [
   },
 ]
 
-export default function PricingPage({ onPageChange }) {
-  const { tier } = useUserTier()
-  const [selectedTier, setSelectedTier] = useState(null)
+export default function PricingPage() {
+  // The single UpgradeModal lives at the app root via UpgradeModalProvider —
+  // mounting another one here would stack focus traps and let tier state
+  // desync between the two instances.
+  const { open: openUpgrade } = useUpgradeModal()
 
   return (
     <div className="space-y-10 py-6">
@@ -44,7 +45,7 @@ export default function PricingPage({ onPageChange }) {
         </p>
       </div>
 
-      <PricingCards onSelectTier={setSelectedTier} />
+      <PricingCards onSelectTier={(t) => { if (t && t !== 'FREE') openUpgrade(t) }} />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Feature
@@ -77,16 +78,6 @@ export default function PricingPage({ onPageChange }) {
       </div>
 
       <FeeDisclosure />
-
-      <UpgradeModal
-        open={!!selectedTier && selectedTier !== tier && selectedTier !== 'FREE'}
-        tier={selectedTier}
-        onClose={() => setSelectedTier(null)}
-        onSuccess={() => {
-          setSelectedTier(null)
-          onPageChange?.('explore')
-        }}
-      />
     </div>
   )
 }

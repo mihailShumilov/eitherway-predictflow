@@ -137,7 +137,7 @@ function AppLayout() {
         {page === 'pricing' && (
           <main className="flex-1 min-w-0">
             <Suspense fallback={<div className="py-20 text-center text-sm text-terminal-muted">Loading pricing…</div>}>
-              <PricingPage onPageChange={handlePageChange} />
+              <PricingPage />
             </Suspense>
           </main>
         )}
