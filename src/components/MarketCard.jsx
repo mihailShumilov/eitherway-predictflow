@@ -1,6 +1,7 @@
 import React from 'react'
 import { Clock, TrendingUp, DollarSign, ArrowUp, ArrowDown, Lock } from 'lucide-react'
-import { formatMarketClose } from '../lib/dateFormat'
+import { format } from 'date-fns'
+import { formatMarketCloseFull } from '../lib/dateFormat'
 import { formatUsd, priceToPercent } from '../lib/format'
 import { usePriceFlash } from '../hooks/useLivePrices'
 
@@ -14,7 +15,8 @@ function getUrgencyColor(closeTime) {
 }
 
 export default function MarketCard({ market, onSelect }) {
-  const closeLabel = formatMarketClose(market.closeTime)
+  const closeLabel = market.closeTime ? format(new Date(market.closeTime), 'MMM d, yyyy') : '—'
+  const closeTooltip = market.closeTime ? formatMarketCloseFull(market.closeTime) : 'Market close time'
   const urgencyColor = getUrgencyColor(market.closeTime)
   const yesPercent = (market.yesAsk * 100).toFixed(0)
   const noPercent = (market.noAsk * 100).toFixed(0)
@@ -109,7 +111,7 @@ export default function MarketCard({ market, onSelect }) {
             {formatUsd(market.liquidity)}
           </span>
         </div>
-        <span className={`flex items-center gap-1 ${urgencyColor}`} title="Market close time">
+        <span className={`flex items-center gap-1 ${urgencyColor}`} title={closeTooltip}>
           <Clock size={12} />
           {closeLabel}
         </span>
