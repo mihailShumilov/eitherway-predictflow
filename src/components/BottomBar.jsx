@@ -2,6 +2,11 @@ import React, { useState, useEffect, memo } from 'react'
 import { Activity, Clock, Download } from 'lucide-react'
 import { useInstallPrompt } from '../hooks/useInstallPrompt'
 import { useLegalModal } from '../hooks/useLegalModal'
+import { SOLANA_NETWORK } from '../config/env'
+
+const NETWORK_LABEL = SOLANA_NETWORK
+  ? SOLANA_NETWORK.charAt(0).toUpperCase() + SOLANA_NETWORK.slice(1).toLowerCase()
+  : 'Mainnet'
 
 function DflowLogo({ size = 12 }) {
   return (
@@ -73,9 +78,9 @@ export default function BottomBar() {
             Install
           </button>
         )}
-        <span className="hidden sm:flex items-center gap-1" title="Running on Solana devnet">
+        <span className="hidden sm:flex items-center gap-1" title={`Running on Solana ${NETWORK_LABEL.toLowerCase()}`}>
           <span className="w-1.5 h-1.5 rounded-full bg-terminal-green animate-pulse" />
-          Devnet
+          {NETWORK_LABEL}
         </span>
         <FooterClock />
       </div>

@@ -40,6 +40,7 @@ export const DFLOW_DOCS_URL = str('VITE_DFLOW_DOCS_URL', 'https://docs.dflow.net
 export const DFLOW_ALLOWED_PROGRAMS = list('VITE_DFLOW_ALLOWED_PROGRAMS', [])
 
 // Solana
+export const SOLANA_NETWORK = str('VITE_SOLANA_NETWORK', 'mainnet')
 export const SOLANA_RPC_ENDPOINTS = list('VITE_SOLANA_RPC_ENDPOINTS', [
   'https://api.devnet.solana.com',
   'https://api.mainnet-beta.solana.com',
@@ -82,6 +83,7 @@ export default {
   DFLOW_ORDER_URL,
   DFLOW_WS_URL,
   DFLOW_DOCS_URL,
+  SOLANA_NETWORK,
   SOLANA_RPC_ENDPOINTS,
   USDC_MINT,
   SPL_TOKEN_PROGRAM,
