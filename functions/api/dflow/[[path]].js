@@ -3,77 +3,21 @@
 // Configure in the dashboard:
 //   Workers & Pages → predictflow → Settings → Variables and Secrets
 //     Production → DFLOW_UPSTREAM=https://prediction-markets-api.dflow.net
+//     Production → DFLOW_API_KEY=<prod key>          (Secret)
 //     Preview    → DFLOW_UPSTREAM=https://dev-prediction-markets-api.dflow.net
+//     Preview    → DFLOW_API_KEY=<dev key, if any>   (Secret)
 //
-// PredictFlow's REST reads are GET; mutating verbs are rejected so a
-// compromised frontend bundle cannot turn this proxy into a blind relay.
+// The shared helper injects the API key server-side so it never lands in
+// the browser bundle. Mutating verbs are rejected — see ../../_lib/dflow-proxy.js.
 
-const FORWARDED_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
-
-const HOP_BY_HOP = new Set([
-  'host',
-  'connection',
-  'keep-alive',
-  'transfer-encoding',
-  'upgrade',
-  'proxy-authorization',
-  'proxy-authenticate',
-  'te',
-  'trailers',
-  'cookie',
-])
+import { proxyDflow } from '../../_lib/dflow-proxy.js'
 
 export async function onRequest({ request, env, params }) {
-  const upstream = env.DFLOW_UPSTREAM
-  if (!upstream) {
-    return json(
-      { error: 'DFLOW_UPSTREAM env var is not set on this Pages environment' },
-      500,
-    )
-  }
-
-  const method = request.method.toUpperCase()
-  if (!FORWARDED_METHODS.has(method)) {
-    return new Response('Method Not Allowed', { status: 405 })
-  }
-
-  const subpath = resolveSubpath(params?.path)
-  const { search } = new URL(request.url)
-  const target = `${upstream.replace(/\/+$/, '')}/${subpath}${search}`
-
-  const forwardedHeaders = new Headers()
-  for (const [name, value] of request.headers) {
-    const lower = name.toLowerCase()
-    if (HOP_BY_HOP.has(lower)) continue
-    if (lower.startsWith('cf-')) continue
-    forwardedHeaders.set(name, value)
-  }
-
-  let upstreamResp
-  try {
-    upstreamResp = await fetch(target, {
-      method,
-      headers: forwardedHeaders,
-      redirect: 'follow',
-    })
-  } catch (err) {
-    return json(
-      {
-        error: 'Upstream DFlow fetch failed',
-        detail: String((err && err.message) || err),
-      },
-      502,
-    )
-  }
-
-  const respHeaders = new Headers(upstreamResp.headers)
-  respHeaders.delete('set-cookie')
-  respHeaders.delete('server')
-
-  return new Response(upstreamResp.body, {
-    status: upstreamResp.status,
-    statusText: upstreamResp.statusText,
-    headers: respHeaders,
+  return proxyDflow({
+    request,
+    env,
+    upstream: env.DFLOW_UPSTREAM,
+    subpath: resolveSubpath(params?.path),
   })
 }
 
@@ -81,11 +25,4 @@ function resolveSubpath(raw) {
   if (Array.isArray(raw)) return raw.join('/')
   if (typeof raw === 'string') return raw.replace(/^\/+/, '')
   return ''
-}
-
-function json(body, status) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
-  })
 }

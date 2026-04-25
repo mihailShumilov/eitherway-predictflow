@@ -4,9 +4,11 @@ A terminal-styled prediction-market frontend for Solana. Browse event/market
 data, connect a Solana wallet, and place market, limit, stop-loss,
 take-profit, or DCA trades that settle through the DFlow quote/order API.
 
-PredictFlow is a **static SPA** — there is no backend in this repo. All
-networking goes to DFlow REST/WebSocket endpoints (optionally via a host
-proxy) and Solana RPC.
+PredictFlow is a **static SPA** plus a thin Cloudflare Pages Function that
+reverse-proxies the DFlow API and injects the DFlow API key on the edge.
+The browser bundle never sees the upstream host or the key — it only ever
+talks to same-origin `/api/dflow*` paths. Solana RPC and the DFlow
+WebSocket are still hit directly from the browser.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -18,22 +20,25 @@ proxy) and Solana RPC.
 │  │             │  │   TP, DCA)   │  │                        │   │
 │  └──────┬──────┘  └──────┬───────┘  └──────────┬─────────────┘   │
 └─────────┼────────────────┼──────────────────────┼────────────────┘
-          │                │                      │
+          │ /api/dflow*    │ wss://…dflow.net/ws  │ Solana RPC
           ▼                ▼                      ▼
-   ┌────────────┐  ┌────────────────┐   ┌─────────────────────┐
-   │ DFlow REST │  │ DFlow quote/   │   │  Solana RPC         │
-   │ (events,   │  │ order API      │   │  (balance scan +    │
-   │  orderbook,│  │  → tx payload  │   │   tx preflight)     │
-   │  trades,   │  │                │   │                     │
-   │  candles)  │  └────────────────┘   └─────────────────────┘
-   └────────────┘           │
-                            ▼
-                    ┌────────────────┐       ┌─────────────────┐
-                    │ Wallet signs   │ ───▶  │ Solana mainnet/ │
-                    │ (Phantom /     │       │ devnet cluster  │
-                    │  Solflare /    │       │                 │
-                    │  Backpack)     │       └─────────────────┘
-                    └────────────────┘
+   ┌────────────────────────┐   ┌──────────┐  ┌──────────────────┐
+   │ Cloudflare Pages       │   │ DFlow WS │  │ Solana RPC       │
+   │ Function               │   │ (live    │  │ (balance scan +  │
+   │ + Authorization header │   │  prices) │  │  tx preflight)   │
+   │ from env.DFLOW_API_KEY │   └──────────┘  └──────────────────┘
+   └───────────┬────────────┘
+               │
+               ├─▶ DFlow REST   (events, orderbook, trades, candles)
+               ├─▶ DFlow quote  (USDC → outcome-mint price)
+               └─▶ DFlow order  (returns a Solana tx for the wallet to sign)
+
+                 ┌────────────────┐       ┌─────────────────┐
+                 │ Wallet signs   │ ───▶  │ Solana mainnet/ │
+                 │ (Phantom /     │       │ devnet cluster  │
+                 │  Solflare /    │       │                 │
+                 │  Backpack)     │       └─────────────────┘
+                 └────────────────┘
 ```
 
 ---
@@ -64,8 +69,10 @@ proxy) and Solana RPC.
   depth) — no recharts runtime; ~150 kB gz removed vs. the original.
 
 **Trading (per market)**
-- **Market** — USDC → outcome-mint swap via DFlow `/quote` + `/order`,
-  signed by an injected Solana wallet.
+- **Market** — USDC → outcome-mint swap via the same-origin
+  `/api/dflow-quote` + `/api/dflow-order` proxies (the Pages Function
+  forwards to DFlow's quote-api with the API key attached), signed by an
+  injected Solana wallet.
 - **Limit** — fires when price crosses a threshold (client-side monitor).
 - **Stop-loss / take-profit** — only shown when a filled position exists
   for that market.
@@ -248,8 +255,10 @@ verifyWithServer()  ── when VITE_KYC_CHECK_URL set ──┐
 submissionLocks.add(nonce)   ← module-level, survives remount
         │
         ▼
-fetchWithRetry GET /order?inputMint=USDC&outputMint=YES&amount=…
+fetchWithRetry GET /api/dflow-order?inputMint=USDC&outputMint=YES&amount=…
                         X-Idempotency-Key: mkt-<uuid>
+        │  Pages Function adds Authorization: Bearer <DFLOW_API_KEY>
+        │  and forwards to https://quote-api.dflow.net/order
         │
         ▼
 validateTxPayload(tx)        ← size cap (≤ 2× MAX_TX_SIZE)
@@ -328,18 +337,36 @@ introduce a new client-persistent key.
 
 ## Environment variables
 
-All `VITE_*` vars are inlined into the client bundle at build time. **Never
-put server secrets here.** Copy `.env.example` → `.env.local`.
+There are two flavors of env var in this repo:
 
-### DFlow
+- **`VITE_*`** — read in client code (`src/config/env.js`) and **inlined
+  into the browser bundle** at build time. Never put a secret here.
+- **No-prefix** (e.g. `DFLOW_UPSTREAM`, `DFLOW_API_KEY`) — read by
+  `vite.config.js` (dev proxy) and the Cloudflare Pages Functions
+  (prod proxy). **Never enter `import.meta.env`, never reach the bundle.**
+  Secrets like `DFLOW_API_KEY` belong here.
+
+Copy `.env.example` → `.env.local` for local dev. In prod (Cloudflare
+Pages), set the same names in the dashboard.
+
+### DFlow — server-side (proxy + auth, never in the bundle)
 
 | Var | Default | Notes |
 | --- | --- | --- |
-| `VITE_DFLOW_PROXY_BASE` | `/api/dflow` | Base path for REST. Proxied by Vite in dev; by Vercel/Netlify/Nginx in prod. |
-| `VITE_DFLOW_UPSTREAM` | `https://dev-prediction-markets-api.dflow.net` | Vite-dev-only; what the `/api/dflow` proxy forwards to. |
-| `VITE_DFLOW_QUOTE_URL` | `https://dev-quote-api.dflow.net/quote` | Direct call (no proxy). |
-| `VITE_DFLOW_ORDER_URL` | `https://dev-quote-api.dflow.net/order` | Direct call (no proxy). |
-| `VITE_DFLOW_WS_URL` | `wss://api.prod.dflow.net/ws` | Leave empty to disable WebSocket. |
+| `DFLOW_UPSTREAM` | `https://dev-prediction-markets-api.dflow.net` | Where `/api/dflow/*` (REST) is forwarded. **Prod:** `https://prediction-markets-api.dflow.net`. |
+| `DFLOW_QUOTE_UPSTREAM` | `https://dev-quote-api.dflow.net/quote` | Where `/api/dflow-quote` is forwarded. **Prod:** `https://quote-api.dflow.net/quote`. |
+| `DFLOW_ORDER_UPSTREAM` | `https://dev-quote-api.dflow.net/order` | Where `/api/dflow-order` is forwarded. **Prod:** `https://quote-api.dflow.net/order`. |
+| `DFLOW_API_KEY` | *empty* | DFlow auth key. Injected by the Pages Functions on every upstream call. **Set as Secret in prod.** Never give this a `VITE_` prefix. |
+| `DFLOW_API_KEY_HEADER` | `Authorization` | If `Authorization`, the helper sends `Authorization: Bearer <key>`. With any other header name (e.g. `x-api-key`) it sends the raw key. |
+
+### DFlow — client (same-origin proxy paths, safe in the bundle)
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `VITE_DFLOW_PROXY_BASE` | `/api/dflow` | Base path used by `useMarkets`, `useHealth`, `RecentTrades`, `CandlestickChart`, `DepthChart`, `usePortfolio`. |
+| `VITE_DFLOW_QUOTE_URL` | `/api/dflow-quote` | Endpoint hit by `useTradeSubmit#previewQuote`. Default is the same-origin proxy. |
+| `VITE_DFLOW_ORDER_URL` | `/api/dflow-order` | Endpoint hit by `useTradeSubmit`, `useDCA`, `useConditionalOrders`. Default is the same-origin proxy. |
+| `VITE_DFLOW_WS_URL` | `wss://api.prod.dflow.net/ws` | WebSocket goes browser-direct (no proxy). Leave empty to disable. |
 | `VITE_DFLOW_DOCS_URL` | `https://docs.dflow.net` | Linked from the About modal. |
 | `VITE_DFLOW_ALLOWED_PROGRAMS` | *empty* | Comma-separated extra program IDs for `assertAllowedPrograms`. **Populate with the DFlow router program before shipping.** |
 | `VITE_LIVE_PRICE_URL` | *empty* | REST fallback for live prices when no WS. `{eventTicker}` is substituted per order. |
@@ -411,12 +438,19 @@ npm run dev
 ```
 
 **What works out of the box:**
-- Markets catalog via the Vite dev proxy → `VITE_DFLOW_UPSTREAM`
-  (dev DFlow host).
+- Markets catalog via the Vite dev proxy → `DFLOW_UPSTREAM` (dev DFlow
+  host). Quote/order go through the dev proxy too — `DFLOW_QUOTE_UPSTREAM`
+  and `DFLOW_ORDER_UPSTREAM`.
 - Wallet connect/disconnect.
 - All UI flows. Trades against the dev DFlow endpoints require real USDC
   on whichever cluster your `VITE_SOLANA_RPC_ENDPOINTS` points at — by
   default, mainnet.
+
+If your dev DFlow cluster requires an API key, set `DFLOW_API_KEY` in
+`.env.local`. Vite's `loadEnv('', cwd)` picks it up but does **not**
+inject it into the bundle — `vite.config.js` reads it server-side and
+the dev proxy forwards it as the `Authorization` header. The same name
+works in Cloudflare Pages, so `.env.local` stays 1:1 with prod env vars.
 
 **If DFlow is unreachable:** the app falls back to `src/data/mockMarkets.js`
 and flips a yellow "Demo mode" banner. You can still click markets, open
@@ -439,7 +473,9 @@ For a completely offline demo (no DFlow, no Solana RPC):
 
 ```bash
 # .env.local
-VITE_DFLOW_UPSTREAM=https://invalid.local
+DFLOW_UPSTREAM=https://invalid.local
+DFLOW_QUOTE_UPSTREAM=https://invalid.local
+DFLOW_ORDER_UPSTREAM=https://invalid.local
 VITE_ALLOW_SYNTHESIZED_MINTS=true
 VITE_ALLOW_SIMULATED_FILLS=true
 ```
@@ -467,7 +503,16 @@ pick a hosting provider and configure the proxy.
 
 Before flipping any prod switch:
 
-- [ ] `.env.production` (or host-env UI) has real DFlow prod URLs.
+- [ ] `DFLOW_UPSTREAM`, `DFLOW_QUOTE_UPSTREAM`, `DFLOW_ORDER_UPSTREAM` set
+      to the prod hosts (`prediction-markets-api.dflow.net` and
+      `quote-api.dflow.net`).
+- [ ] `DFLOW_API_KEY` set as a **Secret** in the Cloudflare Pages
+      dashboard. **No `VITE_` prefix.**
+- [ ] `DFLOW_API_KEY_HEADER` set if DFlow expects something other than
+      `Authorization: Bearer …` (default).
+- [ ] `VITE_DFLOW_QUOTE_URL=/api/dflow-quote` and
+      `VITE_DFLOW_ORDER_URL=/api/dflow-order` (defaults — don't override
+      to absolute DFlow URLs in prod).
 - [ ] `VITE_DFLOW_ALLOWED_PROGRAMS` includes the DFlow router program ID(s).
 - [ ] `VITE_SOLANA_RPC_ENDPOINTS` points to a paid RPC provider
       (Helius / Triton / QuickNode).
@@ -478,8 +523,22 @@ Before flipping any prod switch:
 - [ ] `VITE_ALLOW_SYNTHESIZED_MINTS=false` and
       `VITE_ALLOW_SIMULATED_FILLS=false` (the defaults — don't override).
 - [ ] `npm run build && npm run size` is green locally.
+- [ ] `dist/assets/*.js` does **not** contain the API key or the
+      DFlow upstream hostnames (sanity-grep before deploying):
+      `grep -E 'prediction-markets-api|quote-api\.dflow|<your key prefix>' dist/assets/*.js`
+      should return nothing.
 - [ ] Legal copy (`VITE_TERMS_URL`, `VITE_RISK_URL`, etc.) points to real
       pages.
+
+> **Note on non-Cloudflare hosts.** The repo's primary deployment target
+> is Cloudflare Pages — the `functions/api/dflow*` Pages Functions
+> inject `DFLOW_API_KEY` server-side. The Vercel / Netlify / Nginx
+> configs in this repo only handle the REST proxy, **not** the quote/order
+> proxy and **not** API-key injection. To use any of them in prod you
+> need to add an equivalent serverless function (Vercel Edge Function,
+> Netlify Function, or an upstream auth-injecting server) for
+> `/api/dflow-quote` and `/api/dflow-order`, and add the same
+> `Authorization: Bearer …` header to the REST proxy.
 
 ### Option A — Vercel
 
@@ -494,13 +553,15 @@ Before flipping any prod switch:
 
 1. Push the repo to GitHub.
 2. In Vercel → Import Project. Framework preset auto-detects Vite.
-3. Add environment variables under Settings → Environment Variables. At
-   minimum: all `VITE_DFLOW_*`, `VITE_SOLANA_RPC_ENDPOINTS`,
+3. Add environment variables under Settings → Environment Variables.
+   At minimum: all `VITE_DFLOW_*`, `VITE_SOLANA_RPC_ENDPOINTS`,
    `VITE_KYC_CHECK_URL`, `VITE_DFLOW_ALLOWED_PROGRAMS`.
-4. Edit `vercel.json` — change the `/api/dflow/(.*)` rewrite destination
-   from `https://dev-prediction-markets-api.dflow.net/$1` to the prod
-   DFlow host. (Rewrites don't read `$ENV` vars directly; either hardcode
-   or use an edge function.)
+4. The shipped `vercel.json` only rewrites `/api/dflow/*` to a static
+   destination and does **not** add an auth header or proxy quote/order.
+   Replace it with three Vercel Edge Functions (or migrate to Cloudflare
+   Pages — see Option E) that implement the same logic as
+   `functions/api/dflow*` in this repo, reading `DFLOW_UPSTREAM`,
+   `DFLOW_QUOTE_UPSTREAM`, `DFLOW_ORDER_UPSTREAM`, and `DFLOW_API_KEY`.
 5. Deploy. Headers (HSTS preload, COOP, CORP, etc.) are already configured.
 
 Already done for you in `vercel.json`:
@@ -513,8 +574,11 @@ Already done for you in `vercel.json`:
 1. Push to GitHub → Netlify → Import.
 2. Build command: `npm run build`. Publish directory: `dist`.
 3. Add env vars under Site settings → Environment variables.
-4. Edit `netlify.toml` — change the `/api/dflow/*` redirect destination
-   from the dev host to prod.
+4. The shipped `netlify.toml` redirect for `/api/dflow/*` is
+   key-injection-less. Add three Netlify Functions for
+   `/api/dflow/*`, `/api/dflow-quote`, and `/api/dflow-order` that
+   forward to the upstream hosts and attach `Authorization: Bearer
+   $DFLOW_API_KEY` (mirror `functions/_lib/dflow-proxy.js`).
 5. Deploy.
 
 ### Option C — Self-hosted Nginx
@@ -523,8 +587,13 @@ Already done for you in `vercel.json`:
 2. Copy `dist/` to `/var/www/predictflow/dist`.
 3. Drop `deploy/nginx.conf` into `/etc/nginx/sites-available/`. Edit:
    - `server_name`
-   - `proxy_pass` in the `/api/dflow/` block — point at prod DFlow
-   - Add a TLS cert (certbot or equivalent)
+   - `proxy_pass` in the `/api/dflow/` block — point at prod DFlow REST
+   - Add a `proxy_set_header Authorization "Bearer $DFLOW_API_KEY";` line
+     (set `$DFLOW_API_KEY` via `env DFLOW_API_KEY;` + `set_by_lua_block`,
+     or hardcode in a `.conf` excluded from VCS).
+   - Add equivalent `location /api/dflow-quote` / `location /api/dflow-order`
+     blocks pointing at `https://quote-api.dflow.net/quote` and `/order`.
+   - Add a TLS cert (certbot or equivalent).
 4. `nginx -t && systemctl reload nginx`.
 
 ### Option D — CI build + upload to any static host
@@ -558,15 +627,23 @@ already committed:
 | --- | --- |
 | `public/_redirects` | SPA fallback — copied to `dist/_redirects` at build |
 | `public/_headers` | Security headers — copied to `dist/_headers` at build |
-| `functions/api/dflow/[[path]].js` | `/api/dflow/*` reverse proxy; reads `DFLOW_UPSTREAM` at runtime |
+| `functions/_lib/dflow-proxy.js` | Shared helper — strips hop-by-hop headers, injects `DFLOW_API_KEY` |
+| `functions/api/dflow/[[path]].js` | `/api/dflow/*` reverse proxy → `DFLOW_UPSTREAM` |
+| `functions/api/dflow-quote.js` | `/api/dflow-quote` reverse proxy → `DFLOW_QUOTE_UPSTREAM` |
+| `functions/api/dflow-order.js` | `/api/dflow-order` reverse proxy → `DFLOW_ORDER_UPSTREAM` |
 
 ```
-┌──────────┐   /api/dflow/*   ┌──────────────────────┐
-│ Browser  │ ───────────────▶ │ Pages Function       │ ─▶ DFlow REST
-└──────────┘                  │ env.DFLOW_UPSTREAM   │
-       │ /*                   └──────────────────────┘
-       └────────────────────▶ dist/index.html  (SPA fallback via _redirects)
+┌──────────┐   /api/dflow/*       ┌─────────────────────────┐
+│ Browser  │ ───────────────────▶ │ Pages Function          │ ─▶ DFlow REST
+│          │   /api/dflow-quote   │ + Authorization header  │ ─▶ DFlow quote
+│          │   /api/dflow-order   │ from env.DFLOW_API_KEY  │ ─▶ DFlow order
+└──────────┘                      └─────────────────────────┘
+       │ /*
+       └────────────────────────▶ dist/index.html  (SPA fallback via _redirects)
 ```
+
+The browser bundle only references same-origin `/api/dflow*` paths — the
+DFlow upstream hosts and the API key live exclusively on the edge runtime.
 
 Because the upstream host is read from an env var at request time, the
 same build artifact works across Production/Preview environments — no
@@ -617,20 +694,24 @@ as **Secret**; everything else can be a plain variable.
 > (`DFLOW_UPSTREAM`, `NODE_VERSION`) stay on the server side and are
 > read by the Pages Function / build environment.
 
-**Runtime — consumed by the Pages Function and the build runner:**
+**Runtime — consumed by the Pages Functions and the build runner. Server-side only — never inlined into the bundle:**
 
 | Variable | Production value | Notes |
 | --- | --- | --- |
-| `DFLOW_UPSTREAM` | `https://prediction-markets-api.dflow.net` | **Required.** Replace with the prod DFlow REST host from DFlow docs. The `/api/dflow` proxy forwards here. |
+| `DFLOW_UPSTREAM` | `https://prediction-markets-api.dflow.net` | **Required.** REST host for markets/events. The `/api/dflow/*` proxy forwards here. |
+| `DFLOW_QUOTE_UPSTREAM` | `https://quote-api.dflow.net/quote` | **Required.** Quote endpoint. The `/api/dflow-quote` proxy forwards here. |
+| `DFLOW_ORDER_UPSTREAM` | `https://quote-api.dflow.net/order` | **Required.** Order endpoint. The `/api/dflow-order` proxy forwards here. |
+| `DFLOW_API_KEY` | `<prod key from DFlow team>` | **Required & Secret.** Injected by the Pages Functions as the auth header on every upstream call. **Never** add a `VITE_` prefix to this — it would leak into the bundle. |
+| `DFLOW_API_KEY_HEADER` | `Authorization` *(default)* | Optional. Set to `x-api-key` (or whatever DFlow expects) if `Authorization: Bearer …` is wrong. With the default, the helper sends `Authorization: Bearer <DFLOW_API_KEY>`; with any other header name it sends the raw key. |
 | `NODE_VERSION` | `20` | **Required.** Matches `.github/workflows/ci.yml`. |
 
-**Build-time — inlined into the client bundle (VITE_*):**
+**Build-time — inlined into the client bundle (VITE_*). Must contain no secrets:**
 
 | Variable | Production value |
 | --- | --- |
 | `VITE_DFLOW_PROXY_BASE` | `/api/dflow` |
-| `VITE_DFLOW_QUOTE_URL` | `https://quote-api.dflow.net/quote` *(verify with DFlow docs)* |
-| `VITE_DFLOW_ORDER_URL` | `https://quote-api.dflow.net/order` *(verify with DFlow docs)* |
+| `VITE_DFLOW_QUOTE_URL` | `/api/dflow-quote` *(same-origin proxy, no upstream host in the bundle)* |
+| `VITE_DFLOW_ORDER_URL` | `/api/dflow-order` *(same-origin proxy, no upstream host in the bundle)* |
 | `VITE_DFLOW_WS_URL` | `wss://api.prod.dflow.net/ws` |
 | `VITE_DFLOW_DOCS_URL` | `https://docs.dflow.net` |
 | `VITE_DFLOW_ALLOWED_PROGRAMS` | `<DFlow router program ID>` — required for real swaps |
@@ -664,9 +745,14 @@ the *dev* DFlow hosts so preview deploys never touch prod data:
 | Variable | Preview value |
 | --- | --- |
 | `DFLOW_UPSTREAM` | `https://dev-prediction-markets-api.dflow.net` |
-| `VITE_DFLOW_QUOTE_URL` | `https://dev-quote-api.dflow.net/quote` |
-| `VITE_DFLOW_ORDER_URL` | `https://dev-quote-api.dflow.net/order` |
+| `DFLOW_QUOTE_UPSTREAM` | `https://dev-quote-api.dflow.net/quote` |
+| `DFLOW_ORDER_UPSTREAM` | `https://dev-quote-api.dflow.net/order` |
+| `DFLOW_API_KEY` | `<dev key from DFlow team, if required>` *(Secret)* |
 | `VITE_ALLOW_SIMULATED_FILLS` | `true` *(optional — OK for QA, never in prod)* |
+
+`VITE_DFLOW_QUOTE_URL` and `VITE_DFLOW_ORDER_URL` should stay as
+`/api/dflow-quote` and `/api/dflow-order` in Preview too — only the
+*upstream* env vars change between environments.
 
 Everything else (KYC, RPC, Proof, legal URLs) can point at the same
 values as production, or at dedicated staging endpoints if you have them.
@@ -678,13 +764,19 @@ Click **Save and Deploy**. Cloudflare will:
 1. Clone the repo on the chosen branch.
 2. Run `npm ci && npm run build` with your env vars exposed to Vite.
 3. Upload `dist/` to the global edge cache.
-4. Deploy `functions/api/dflow/[[path]].js` to the Workers runtime.
+4. Deploy `functions/api/dflow/[[path]].js`, `functions/api/dflow-quote.js`, and `functions/api/dflow-order.js` to the Workers runtime.
 5. Publish at `https://predictflow.pages.dev` (unique per project).
 
 First build takes ~90–150 seconds. Watch the **Build log** tab for errors.
 Common failures on first deploy:
 - **`npm error EBADENGINE`** → `NODE_VERSION` is missing or wrong.
-- **Blank markets list after deploy** → `DFLOW_UPSTREAM` not set.
+- **Blank markets list after deploy** → `DFLOW_UPSTREAM` not set, or
+  `DFLOW_API_KEY` missing/invalid (DFlow returns 401/403; the proxy
+  forwards the status as-is).
+- **Trade fails with "Order API unavailable" / 401 / 403** →
+  `DFLOW_QUOTE_UPSTREAM` / `DFLOW_ORDER_UPSTREAM` not set, or
+  `DFLOW_API_KEY` wrong, or `DFLOW_API_KEY_HEADER` doesn't match what
+  DFlow expects (try `x-api-key` if `Authorization` fails).
 - **"This market has no tradeable outcome mint yet"** for every market →
   `VITE_DFLOW_ALLOWED_PROGRAMS` is empty; real swaps can't route.
 
@@ -743,13 +835,16 @@ test them locally with Wrangler:
 ```bash
 npx wrangler pages dev dist \
   --binding DFLOW_UPSTREAM=https://dev-prediction-markets-api.dflow.net \
+  --binding DFLOW_QUOTE_UPSTREAM=https://dev-quote-api.dflow.net/quote \
+  --binding DFLOW_ORDER_UPSTREAM=https://dev-quote-api.dflow.net/order \
+  --binding DFLOW_API_KEY=<your dev key> \
   --compatibility-date=2026-04-21
 ```
 
 Wrangler serves `dist/` on `http://localhost:8788` and executes
 `functions/` against the local runtime — close enough to production to
-debug proxy behavior without a preview deploy. Run `npm run build`
-first so `dist/` is fresh.
+debug proxy behavior (including key injection) without a preview deploy.
+Run `npm run build` first so `dist/` is fresh.
 
 #### Step 9 — Rollback
 
@@ -811,6 +906,28 @@ no comparisons). In prod with only limit orders and no WS, you must set
 
 ## Security model
 
+### DFlow API key isolation
+
+The DFlow API key never reaches the browser. The browser bundle only
+references same-origin `/api/dflow*` paths; the upstream hostnames and
+the key live exclusively in:
+
+- **Prod:** Cloudflare Pages env (server-side), read at request time by
+  the Pages Functions in `functions/api/`.
+- **Dev:** `.env.local` (no `VITE_` prefix), read at server-startup time
+  by `vite.config.js` and attached to the dev proxy headers.
+
+The shared helper at `functions/_lib/dflow-proxy.js` also rejects
+non-GET/HEAD/OPTIONS verbs, so a compromised frontend bundle cannot
+turn the proxy into a blind relay for state-changing requests. To
+verify the bundle has no leak, run after a build:
+
+```bash
+grep -E "prediction-markets-api|quote-api\.dflow|<your key prefix>" \
+  dist/assets/*.js
+# Expected: no matches.
+```
+
 ### Transaction signing
 
 Every signed transaction goes through four defenses in order:
@@ -871,7 +988,7 @@ If any step fails the user sees an explicit error, never the signing prompt.
 
 ## Testing
 
-Vitest + jsdom. 53 tests across 11 files as of last snapshot.
+Vitest + jsdom. 56 tests across 12 files as of last snapshot.
 
 ```bash
 npm test                         # all tests, one-shot
@@ -938,4 +1055,7 @@ importing a heavy package at the top level instead of behind `lazy()`.
 
 - `docs/eitherway-platform.md` — notes on the Eitherway export origin
   (host harness, known export quirks, template lineage).
-- `.env.example` — canonical list of every `VITE_*` var.
+- `.env.example` — canonical list of every env var (server-side
+  `DFLOW_*` proxy targets / API key, plus client-side `VITE_*`).
+- `functions/_lib/dflow-proxy.js` — single source of truth for how the
+  Pages Functions strip headers and inject the DFlow auth header.

@@ -28,10 +28,13 @@ export const IS_DEV = !!env.DEV
 export const IS_PROD = !!env.PROD
 export const MODE = env.MODE || 'development'
 
-// DFlow — defaults match the dev endpoints. Override for prod via VITE_*.
+// DFlow — defaults are same-origin proxy paths so the browser bundle never
+// needs to know the upstream host or carry an API key. The Cloudflare Pages
+// Functions in `functions/api/` add the DFLOW_API_KEY header server-side.
+// In Vite dev, `vite.config.js` proxies these to the dev-cluster hosts.
 export const DFLOW_PROXY_BASE = str('VITE_DFLOW_PROXY_BASE', '/api/dflow')
-export const DFLOW_QUOTE_URL = str('VITE_DFLOW_QUOTE_URL', 'https://dev-quote-api.dflow.net/quote')
-export const DFLOW_ORDER_URL = str('VITE_DFLOW_ORDER_URL', 'https://dev-quote-api.dflow.net/order')
+export const DFLOW_QUOTE_URL = str('VITE_DFLOW_QUOTE_URL', '/api/dflow-quote')
+export const DFLOW_ORDER_URL = str('VITE_DFLOW_ORDER_URL', '/api/dflow-order')
 export const DFLOW_WS_URL = str('VITE_DFLOW_WS_URL', 'wss://api.prod.dflow.net/ws')
 export const DFLOW_DOCS_URL = str('VITE_DFLOW_DOCS_URL', 'https://docs.dflow.net')
 export const DFLOW_ALLOWED_PROGRAMS = list('VITE_DFLOW_ALLOWED_PROGRAMS', [])
