@@ -21,11 +21,16 @@ export default function Header({ page, onPageChange }) {
     <header className="bg-terminal-surface border-b border-terminal-border sticky top-0 z-40">
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onPageChange?.('explore')}
+            className="flex items-center gap-2 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-terminal-accent"
+            aria-label="PredictFlow home"
+          >
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-terminal-accent to-terminal-cyan flex items-center justify-center">
               <Activity size={18} className="text-white" />
             </div>
-            <div>
+            <div className="text-left">
               <h1 className="text-lg font-bold text-white tracking-tight leading-none">
                 PredictFlow
               </h1>
@@ -33,7 +38,7 @@ export default function Header({ page, onPageChange }) {
                 DFlow Terminal
               </p>
             </div>
-          </div>
+          </button>
 
           <div className="hidden md:block h-8 w-px bg-terminal-border" />
 
