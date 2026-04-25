@@ -30,4 +30,20 @@ export function formatMarketCloseFull(iso) {
   return `${format(d, 'MMM d, yyyy HH:mm')} ${getTzLabel(d)}`
 }
 
+// DFlow expresses market close times as Unix seconds (10-digit numbers); JS
+// `new Date()` expects milliseconds or an ISO string. Normalize whatever we
+// get into ISO so every downstream `new Date(closeTime)` works the same.
+// Returns null when the input is missing or unparseable — callers must guard.
+export function toCloseTimeIso(value) {
+  if (value === null || value === undefined || value === '') return null
+  const n = typeof value === 'number' ? value : (/^\d+$/.test(String(value).trim()) ? Number(value) : NaN)
+  if (Number.isFinite(n)) {
+    const ms = n < 1e12 ? n * 1000 : n
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? null : d.toISOString()
+  }
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
+}
+
 export { getTzLabel }

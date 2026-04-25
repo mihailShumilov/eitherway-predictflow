@@ -5,7 +5,9 @@ import { formatUsd, priceToPercent } from '../lib/format'
 import { usePriceFlash } from '../hooks/useLivePrices'
 
 function getUrgencyColor(closeTime) {
-  const hours = (new Date(closeTime) - Date.now()) / 3600000
+  if (!closeTime) return 'text-terminal-muted'
+  const hours = (new Date(closeTime).getTime() - Date.now()) / 3600000
+  if (!Number.isFinite(hours)) return 'text-terminal-muted'
   if (hours < 4) return 'text-terminal-red'
   if (hours < 24) return 'text-terminal-yellow'
   return 'text-terminal-muted'
@@ -16,7 +18,8 @@ export default function MarketCard({ market, onSelect }) {
   const urgencyColor = getUrgencyColor(market.closeTime)
   const yesPercent = (market.yesAsk * 100).toFixed(0)
   const noPercent = (market.noAsk * 100).toFixed(0)
-  const isClosed = new Date(market.closeTime).getTime() <= Date.now()
+  const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
+  const isClosed = Number.isFinite(closeMs) && closeMs <= Date.now()
   const flash = usePriceFlash(market.id, market.yesAsk, market.noAsk)
 
   const flashClass = flash === 'up'

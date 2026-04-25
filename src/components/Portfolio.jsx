@@ -1,5 +1,6 @@
 import React from 'react'
 import { format, formatDistanceToNowStrict } from 'date-fns'
+import { formatMarketClose, formatMarketCloseFull } from '../lib/dateFormat'
 import {
   Wallet, TrendingUp, TrendingDown, DollarSign, Briefcase,
   RefreshCw, Loader2, AlertCircle, ArrowUpRight, ArrowDownRight, Clock,
@@ -251,11 +252,19 @@ function PositionsTable({ positions }) {
                     {isProfit ? '+' : ''}${p.pnl.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {p.closeTime ? (
-                      <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${c.bg} ${c.border} ${c.text}`}>
-                        {format(new Date(p.closeTime), 'MMM d')}
-                      </span>
-                    ) : (
+                    {p.closeTime ? (() => {
+                      const d = new Date(p.closeTime)
+                      const includeYear = d.getFullYear() !== new Date().getFullYear()
+                      const label = formatMarketClose(p.closeTime, includeYear ? 'MMM d, yyyy HH:mm' : 'MMM d, HH:mm')
+                      return (
+                        <span
+                          className={`inline-block text-[10px] px-1.5 py-0.5 rounded border ${c.bg} ${c.border} ${c.text}`}
+                          title={formatMarketCloseFull(p.closeTime)}
+                        >
+                          {label}
+                        </span>
+                      )
+                    })() : (
                       <span className="text-terminal-muted">—</span>
                     )}
                   </td>

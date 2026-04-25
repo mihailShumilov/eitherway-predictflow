@@ -8,6 +8,7 @@ const ALLOW_MOCK_FALLBACK = (SOLANA_NETWORK || '').toLowerCase() !== 'mainnet'
 import { fetchWithRetry } from '../lib/http'
 import { extractOutcomeMints } from '../lib/normalize'
 import { safeGet, safeSet } from '../lib/storage'
+import { toCloseTimeIso } from '../lib/dateFormat'
 
 // Lazy-loaded mock data. Only imported if the DFlow API fails — keeps
 // ~460 lines of synthetic markets out of the happy-path bundle.
@@ -108,7 +109,11 @@ export function MarketsProvider({ children }) {
         subcategory: evt.subcategory || tags[0] || '',
         tags,
         status: evt.status || 'active',
-        closeTime: evt.closeTime || evt.close_time || evt.endDate || new Date(Date.now() + 86400000).toISOString(),
+        // DFlow events don't carry a close time — it lives on each nested
+        // market. Read the event-level fields defensively in case that ever
+        // changes; otherwise null and let flattenMarkets pick up the per-
+        // market value below.
+        closeTime: toCloseTimeIso(evt.closeTime ?? evt.close_time ?? evt.endDate),
         markets: (evt.markets || []).map((m, j) => ({
           id: m.id || `live-mkt-${i}-${j}`,
           ticker: m.ticker || m.marketTicker || m.market_ticker || m.id || `live-mkt-${i}-${j}`,
@@ -121,6 +126,7 @@ export function MarketsProvider({ children }) {
           volume: parseFloat(m.volume || 0),
           liquidity: parseFloat(m.liquidity || 0),
           status: m.status || 'active',
+          closeTime: toCloseTimeIso(m.closeTime ?? m.close_time),
         })),
         }
       })

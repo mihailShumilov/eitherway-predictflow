@@ -44,7 +44,8 @@ export default function TradePanel({ market }) {
   const dcaStrategies = strategiesForMarket(market.id)
   const activeDca = dcaStrategies.find(s => s.status === 'active')
 
-  const isClosed = new Date(market.closeTime).getTime() <= Date.now()
+  const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
+  const isClosed = Number.isFinite(closeMs) && closeMs <= Date.now()
   const positionsVersion = useSyncExternalStore(subscribePositions, getPositionsVersion, () => 0)
   const hasPos = useMemo(() => hasPosition(market.id), [market.id, positionsVersion])
 

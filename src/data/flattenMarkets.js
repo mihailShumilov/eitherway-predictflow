@@ -15,7 +15,7 @@ export function flattenMarkets(events) {
         category: event.category,
         subcategory: event.subcategory,
         tags: event.tags || [],
-        closeTime: event.closeTime,
+        closeTime: market.closeTime ?? event.closeTime ?? null,
       })
     }
   }

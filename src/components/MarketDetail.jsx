@@ -39,11 +39,15 @@ export default function MarketDetail({ market, onClose }) {
       // User dismissed share sheet, or clipboard blocked — silent.
     }
   }
-  const timeLeft = formatDistanceToNow(new Date(market.closeTime), { addSuffix: true })
+  const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
+  const hasClose = Number.isFinite(closeMs)
+  const timeLeft = hasClose ? formatDistanceToNow(closeMs, { addSuffix: true }) : '—'
   const closeDate = formatMarketCloseFull(market.closeTime)
-  const hoursLeft = (new Date(market.closeTime) - Date.now()) / 3600000
-  const isClosed = hoursLeft <= 0
-  const urgencyColor = hoursLeft < 4 ? 'text-terminal-red' : hoursLeft < 24 ? 'text-terminal-yellow' : 'text-terminal-muted'
+  const hoursLeft = hasClose ? (closeMs - Date.now()) / 3600000 : Infinity
+  const isClosed = hasClose && hoursLeft <= 0
+  const urgencyColor = !hasClose
+    ? 'text-terminal-muted'
+    : hoursLeft < 4 ? 'text-terminal-red' : hoursLeft < 24 ? 'text-terminal-yellow' : 'text-terminal-muted'
 
   return (
     <div

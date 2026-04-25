@@ -136,6 +136,7 @@ export function DCAProvider({ children }) {
       question: config.question,
       eventTitle: config.eventTitle,
       category: config.category,
+      closeTime: config.closeTime || null,
       side: config.side,
       amountPerBuy: config.amountPerBuy,
       frequency: config.frequency,
@@ -178,6 +179,7 @@ export function DCAProvider({ children }) {
       question: strategy.question,
       eventTitle: strategy.eventTitle,
       category: strategy.category,
+      closeTime: strategy.closeTime || null,
       dcaStrategyId: strategy.id,
     })
   }, [])

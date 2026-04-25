@@ -206,6 +206,7 @@ export function OrdersProvider({ children }) {
       question: order.question,
       eventTitle: order.eventTitle,
       category: order.category,
+      closeTime: order.closeTime || null,
     })
 
     setOrders(prev => prev.map(o =>

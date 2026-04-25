@@ -384,6 +384,7 @@ export function useTradeSubmit(market) {
         question: market.question,
         eventTitle: market.eventTitle,
         category: market.category,
+        closeTime: market.closeTime || null,
       })
       track('trade_filled', {
         marketId: market.id, side, amount: parseFloat(amount),
@@ -446,6 +447,7 @@ export function useTradeSubmit(market) {
       question: market.question,
       eventTitle: market.eventTitle,
       category: market.category,
+      closeTime: market.closeTime || null,
       side,
       amount: parseFloat(amount),
       triggerPrice: tp,
@@ -482,6 +484,7 @@ export function useTradeSubmit(market) {
       question: market.question,
       eventTitle: market.eventTitle,
       category: market.category,
+      closeTime: market.closeTime || null,
       side,
       amountPerBuy: perBuy,
       frequency,

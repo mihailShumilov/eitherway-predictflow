@@ -1,3 +1,5 @@
+import { toCloseTimeIso } from './dateFormat'
+
 // Payload normalizers for DFlow responses.
 //
 // DFlow's live endpoints aren't versioned and different paths have returned
@@ -109,7 +111,7 @@ export function normalizeMarket(payload, mint) {
     question: m.question || m.title || m.name || 'Market',
     eventTitle: event.title || event.name || m.eventTitle || '',
     category: m.category || event.category || 'Other',
-    closeTime: m.closeTime || m.close_time || event.closeTime || event.close_time || null,
+    closeTime: toCloseTimeIso(m.closeTime ?? m.close_time ?? event.closeTime ?? event.close_time),
     side: side || 'yes',
     currentPrice: Number.isFinite(currentPrice) ? currentPrice : 0.5,
     yesMint,
