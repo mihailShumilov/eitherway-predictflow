@@ -67,6 +67,56 @@ function findInterestingLog(logs) {
   return fallback || null
 }
 
+// Walk simulation logs to find which program (and what depth) actually
+// failed. Solana logs the call stack as `Program X invoke [depth]` /
+// `Program X success` / `Program X failed: ...`, and a CPI from program A
+// into program B will show B's failure even though the *outer* instruction
+// is attributed to A. This lets us tell "DFlow Predict failed code 1" apart
+// from "DFlow Predict's CPI into the System Program ran out of lamports".
+function analyzeInvokeStack(logs) {
+  if (!Array.isArray(logs)) return null
+  const stack = []
+  let lastInvoked = null
+  let failingProgram = null
+  let failLine = null
+  for (const line of logs) {
+    const invoke = /^Program (\S+) invoke \[(\d+)\]/.exec(line)
+    if (invoke) {
+      const depth = parseInt(invoke[2], 10)
+      stack.length = depth - 1
+      stack.push(invoke[1])
+      lastInvoked = invoke[1]
+      continue
+    }
+    if (/^Program \S+ success/.test(line)) {
+      stack.pop()
+      continue
+    }
+    const failed = /^Program (\S+) failed:/.exec(line)
+    if (failed) {
+      failingProgram = failed[1]
+      failLine = line
+      break
+    }
+  }
+  return { failingProgram: failingProgram || lastInvoked, failLine, depth: stack.length }
+}
+
+// "Transfer: insufficient lamports X, need Y" comes from the System Program
+// when a CPI tries to move SOL it doesn't have. Unambiguous SOL shortage.
+function detectInsufficientLamports(logs) {
+  if (!Array.isArray(logs)) return null
+  const line = logs.find(l => /Transfer:\s*insufficient lamports/i.test(l))
+  if (!line) return null
+  const m = /insufficient lamports\s+(\d+),\s*need\s+(\d+)/i.exec(line)
+  if (m) {
+    const have = parseInt(m[1], 10)
+    const need = parseInt(m[2], 10)
+    return { have, need, line }
+  }
+  return { have: null, need: null, line }
+}
+
 export function formatSimulationError({ error, logs = [], summary = [] }) {
   const out = {
     message: error || 'Simulation failed before signing.',
@@ -88,16 +138,45 @@ export function formatSimulationError({ error, logs = [], summary = [] }) {
   const program = programLabel(programId)
 
   const customMatch = /"Custom"\s*:\s*(\d+)/.exec(detailStr)
+  const stack = analyzeInvokeStack(out.logs)
+  const lamports = detectInsufficientLamports(out.logs)
+  const innerFail = stack?.failingProgram && stack.failingProgram !== programId
+    ? stack.failingProgram
+    : null
+
   if (customMatch) {
     const code = parseInt(customMatch[1], 10)
     let friendly = null
+
+    // Outer attribution maps cleanly for known programs.
     if (programId === SPL_TOKEN_PROGRAM_ID) friendly = SPL_TOKEN_ERRORS[code]
     else if (programId === SYSTEM_PROGRAM_ID) friendly = SYSTEM_ERRORS[code]
 
+    // CPI failure: outer is DFlow / unknown, but the actual failing program
+    // is something we *can* interpret. This is the common case for
+    // "DFlow Predict instruction 2, code 1" where the real cause is a
+    // System Program lamports shortage during account creation.
+    if (!friendly && innerFail) {
+      if (lamports) {
+        friendly = lamports.need
+          ? `Wallet has insufficient SOL. The transaction tried to move ${(lamports.need / 1e9).toFixed(6)} SOL but only ${(lamports.have / 1e9).toFixed(6)} was available. Add SOL to cover network fees and account rent, then try again.`
+          : 'Wallet has insufficient SOL. The transaction needs SOL to cover network fees and rent for new accounts. Add SOL and try again.'
+      } else if (innerFail === SYSTEM_PROGRAM_ID) {
+        friendly = `${programLabel(programId)} failed during a System Program call (likely creating or funding an account). Most often this means the wallet does not have enough SOL for fees and account rent — top up SOL and try again.`
+      } else if (innerFail === SPL_TOKEN_PROGRAM_ID && code === 1) {
+        friendly = 'Insufficient token balance for this swap. Top up the input token (typically USDC) and try again.'
+      }
+    }
+
+    if (!friendly) {
+      friendly = `${program} rejected the swap (instruction ${ixIndex}, code ${code}).`
+    }
+
     out.message = friendly
-      ? friendly
-      : `${program} rejected the swap (instruction ${ixIndex}, code ${code}).`
     out.details = `${program} · instruction ${ixIndex} · code ${code}`
+    if (innerFail) {
+      out.details += ` · inner CPI: ${programLabel(innerFail)}`
+    }
   } else {
     out.message = `${program} failed at instruction ${ixIndex}: ${detailStr}`
     out.details = `${program} · instruction ${ixIndex}`
