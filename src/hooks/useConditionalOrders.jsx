@@ -32,9 +32,11 @@ function generateId() {
 }
 
 // DFlow live_data payload shape isn't formally documented — probe a few common layouts.
-// If marketId is provided we REQUIRE a match. Falling back to the first candidate
-// with a yes price risks using a sibling market's quote for this order.
-function parseLivePrice(payload, marketId) {
+// `keys` are candidate identifiers to match (marketId AND/OR marketTicker — the
+// id is often a synthesized `live-mkt-XX-YY` fallback that DFlow's response
+// would never echo back, while the ticker is what the rest of the app already
+// uses against DFlow successfully).
+function parseLivePrice(payload, keys) {
   if (!payload) return null
   const candidates = [payload]
   if (Array.isArray(payload)) candidates.push(...payload)
@@ -46,16 +48,16 @@ function parseLivePrice(payload, marketId) {
     return Number.isFinite(yes) ? yes : null
   }
 
-  if (marketId) {
+  const wanted = (Array.isArray(keys) ? keys : [keys]).filter(Boolean)
+  if (wanted.length) {
     for (const c of candidates) {
       if (!c || typeof c !== 'object') continue
-      const id = c.id ?? c.marketId ?? c.market_id ?? c.ticker ?? c.marketTicker
-      if (id === marketId) {
+      const ids = [c.id, c.marketId, c.market_id, c.ticker, c.marketTicker].filter(Boolean)
+      if (ids.some(id => wanted.includes(id))) {
         const yes = pickYes(c)
         if (yes !== null) return { yes, no: 1 - yes }
       }
     }
-    // Marked explicitly — caller supplied a marketId and we couldn't find it.
     return null
   }
 
@@ -67,28 +69,71 @@ function parseLivePrice(payload, marketId) {
   return null
 }
 
-async function fetchLivePrice(order) {
-  // Prefer an explicitly-configured live-price URL (env override); then fall
-  // back to the DFlow by-event endpoint; then to simulated drift (dev only).
-  const candidateUrls = []
-  if (LIVE_PRICE_URL) {
-    candidateUrls.push(LIVE_PRICE_URL.replace('{eventTicker}', encodeURIComponent(order.eventTicker || '')))
+// Derive current YES/NO ask prices from the same orderbook endpoint OrderBook
+// uses on screen. yes_bids = orders to buy YES; no_bids = orders to buy NO.
+// Selling YES at price P is economically the same as buying NO at (1-P), so
+// the best YES ask is `1 - max(no_bid)` (and symmetrically for noAsk).
+function deriveAsksFromBook(data) {
+  const yesBidKeys = data?.yes_bids ? Object.keys(data.yes_bids).map(parseFloat).filter(Number.isFinite) : []
+  const noBidKeys = data?.no_bids ? Object.keys(data.no_bids).map(parseFloat).filter(Number.isFinite) : []
+  const maxYesBid = yesBidKeys.length ? Math.max(...yesBidKeys) : null
+  const maxNoBid = noBidKeys.length ? Math.max(...noBidKeys) : null
+  const yesAsk = maxNoBid !== null ? 1 - maxNoBid : null
+  const noAsk = maxYesBid !== null ? 1 - maxYesBid : null
+  if (yesAsk === null && noAsk === null) return null
+  return {
+    yes: yesAsk !== null ? yesAsk : (noAsk !== null ? 1 - noAsk : null),
+    no: noAsk !== null ? noAsk : (yesAsk !== null ? 1 - yesAsk : null),
   }
-  if (order.eventTicker) {
-    candidateUrls.push(`${DFLOW_BASE}/api/v1/live_data/by-event/${encodeURIComponent(order.eventTicker)}`)
-  }
+}
 
-  for (const url of candidateUrls) {
+async function fetchLivePrice(order) {
+  // Order of preference, most-trusted first:
+  //   1. Explicit env override (LIVE_PRICE_URL).
+  //   2. Per-market orderbook — same source as the on-screen book, keyed by
+  //      ticker (works even when marketId is a synthesized fallback).
+  //   3. by-event live_data — the legacy path; works only when DFlow echoes
+  //      our ids/tickers back.
+  //   4. Simulated drift (dev only).
+  if (LIVE_PRICE_URL) {
     try {
+      const url = LIVE_PRICE_URL.replace('{eventTicker}', encodeURIComponent(order.eventTicker || ''))
       const res = await fetchWithRetry(url, {}, { retries: 1, timeoutMs: 3000 })
       if (res.ok) {
         const data = await res.json()
-        const parsed = parseLivePrice(data, order.marketId)
+        const parsed = parseLivePrice(data, [order.marketId, order.marketTicker])
         if (parsed) return { ...parsed, source: 'dflow' }
       }
-    } catch {
-      // try next candidate
-    }
+    } catch { /* fall through */ }
+  }
+
+  const bookTicker = order.marketTicker || order.marketId
+  if (bookTicker) {
+    try {
+      const res = await fetchWithRetry(
+        `${DFLOW_BASE}/api/v1/orderbook/${encodeURIComponent(bookTicker)}`,
+        {}, { retries: 1, timeoutMs: 3000 },
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const parsed = deriveAsksFromBook(data)
+        if (parsed) return { ...parsed, source: 'orderbook' }
+      }
+    } catch { /* fall through */ }
+  }
+
+  if (order.eventTicker) {
+    try {
+      const res = await fetchWithRetry(
+        `${DFLOW_BASE}/api/v1/live_data/by-event/${encodeURIComponent(order.eventTicker)}`,
+        {}, { retries: 1, timeoutMs: 3000 },
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const parsed = parseLivePrice(data, [order.marketId, order.marketTicker])
+        if (parsed) return { ...parsed, source: 'dflow' }
+      }
+    } catch { /* fall through */ }
   }
 
   if (!ALLOW_SIMULATED_FILLS) {
