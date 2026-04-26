@@ -237,7 +237,15 @@ export function MarketsProvider({ children }) {
       .sort((a, b) => {
         switch (sortBy) {
           case 'volume': return b.volume - a.volume
-          case 'closeTime': return new Date(a.closeTime) - new Date(b.closeTime)
+          case 'closeTime': {
+            const now = Date.now()
+            const aMs = new Date(a.closeTime).getTime()
+            const bMs = new Date(b.closeTime).getTime()
+            const aClosed = Number.isFinite(aMs) && aMs <= now
+            const bClosed = Number.isFinite(bMs) && bMs <= now
+            if (aClosed !== bClosed) return aClosed ? 1 : -1
+            return aClosed ? bMs - aMs : aMs - bMs
+          }
           case 'yesPrice': return b.yesAsk - a.yesAsk
           case 'noPrice': return b.noAsk - a.noAsk
           default: return 0
