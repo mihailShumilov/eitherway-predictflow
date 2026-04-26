@@ -434,10 +434,17 @@ export function useTradeSubmit(market) {
   const submitConditionalOrder = useCallback(({ orderType, side, amount, triggerPrice }) => {
     if (!connected) { connect(); return }
     if (!requireKyc()) return
-    if (!amount || parseFloat(amount) <= 0) return
-    if (!triggerPrice || parseFloat(triggerPrice) <= 0 || parseFloat(triggerPrice) >= 100) return
+    if (!amount || parseFloat(amount) <= 0) {
+      setResult({ success: false, error: 'Enter a valid USDC amount' })
+      return
+    }
+    const triggerNum = parseFloat(triggerPrice)
+    if (!triggerPrice || !Number.isFinite(triggerNum) || triggerNum <= 0 || triggerNum >= 100) {
+      setResult({ success: false, error: 'Enter a trigger price between 0.1¢ and 99¢' })
+      return
+    }
 
-    const tp = parseFloat(triggerPrice) / 100
+    const tp = triggerNum / 100
     const price = side === 'yes' ? market.yesAsk : market.noAsk
     if (orderType === 'stop-loss' && tp >= price) {
       setResult({ success: false, error: 'Stop-loss trigger must be below current price' })

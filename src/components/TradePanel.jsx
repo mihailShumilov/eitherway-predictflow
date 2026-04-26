@@ -83,6 +83,19 @@ export default function TradePanel({ market }) {
     setOrderType(next)
     trade.resetQuote()
     trade.resetResult()
+    // The trigger slider's visual default falls back to current price, but
+    // the underlying state stays empty until the user drags it — so the
+    // submit button silently no-ops. Pre-seed with the current cents so the
+    // slider matches state and a click immediately submits a valid order.
+    if (next === 'limit' || next === 'stop-loss' || next === 'take-profit') {
+      const cents = (price * 100)
+      const seed = next === 'stop-loss'
+        ? Math.max(1, Math.floor(cents) - 1)
+        : next === 'take-profit'
+          ? Math.min(99, Math.ceil(cents) + 1)
+          : Math.max(1, Math.min(99, Math.round(cents * 10) / 10))
+      setTriggerPrice(String(seed))
+    }
   }
 
   const needsCta = !connected || !kycVerified
@@ -101,10 +114,16 @@ export default function TradePanel({ market }) {
     }
   }
 
+  const triggerNum = parseFloat(triggerPrice)
+  const triggerInvalid =
+    effectiveOrderType !== 'market' &&
+    effectiveOrderType !== 'dca' &&
+    (!triggerPrice || !Number.isFinite(triggerNum) || triggerNum <= 0 || triggerNum >= 100)
   const primaryDisabled = trade.submitting
     || isClosed
     || mintsMissing
     || (!needsCta && (!amount || insufficientUsdc))
+    || (!needsCta && triggerInvalid)
 
   return (
     <div className="bg-terminal-surface border border-terminal-border rounded-lg overflow-hidden">
@@ -282,9 +301,9 @@ function TriggerPriceInput({ price, orderType, value, onChange }) {
 
       <input
         type="range"
-        min="1"
+        min="0.1"
         max="99"
-        step="1"
+        step="0.1"
         value={sliderPct}
         onChange={(e) => onChange(e.target.value)}
         className="w-full h-1.5 rounded-full appearance-none cursor-pointer mb-2"
@@ -298,10 +317,10 @@ function TriggerPriceInput({ price, orderType, value, onChange }) {
           type="number"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder={`${(price * 100).toFixed(0)}`}
-          min="1"
+          placeholder={`${(price * 100).toFixed(1)}`}
+          min="0.1"
           max="99"
-          step="1"
+          step="0.1"
           className="w-full px-4 py-2.5 bg-terminal-card border border-terminal-border rounded-lg text-sm font-mono text-terminal-text placeholder-terminal-muted focus:outline-none focus:border-terminal-accent focus:ring-1 focus:ring-terminal-accent/30"
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-terminal-muted text-xs">¢</span>
