@@ -104,6 +104,19 @@ export function extractOutcomeMints(m) {
   return { yesMint: null, noMint: null }
 }
 
+// A market is tradeable when it accepts new orders right now: status is
+// active (not finalized/settled/closed) and the close time is in the future.
+// DFlow ships `status: "finalized"` for resolved/expired markets even when
+// the timestamp window says otherwise — so always trust status when present.
+export function isMarketTradeable(market) {
+  if (!market) return false
+  const status = (market.status || '').toLowerCase()
+  if (status && status !== 'active') return false
+  const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
+  if (Number.isFinite(closeMs) && closeMs <= Date.now()) return false
+  return true
+}
+
 // market/by-mint response normalizer.
 // Callers pass `mint` so we can infer which outcome (yes/no) the user holds.
 export function normalizeMarket(payload, mint) {

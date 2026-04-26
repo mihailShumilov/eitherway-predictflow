@@ -1,8 +1,9 @@
 import React from 'react'
-import { Clock, TrendingUp, DollarSign, ArrowUp, ArrowDown, Lock } from 'lucide-react'
+import { Clock, TrendingUp, DollarSign, ArrowUp, ArrowDown, Lock, Zap } from 'lucide-react'
 import { format } from 'date-fns'
 import { formatMarketCloseFull } from '../lib/dateFormat'
-import { formatUsd, priceToPercent } from '../lib/format'
+import { formatUsd, priceToPercent, humanizeOutcomeLabel } from '../lib/format'
+import { isMarketTradeable } from '../lib/normalize'
 import { usePriceFlash } from '../hooks/useLivePrices'
 
 function getUrgencyColor(closeTime) {
@@ -22,6 +23,7 @@ export default function MarketCard({ market, onSelect }) {
   const noPercent = (market.noAsk * 100).toFixed(0)
   const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
   const isClosed = Number.isFinite(closeMs) && closeMs <= Date.now()
+  const tradeable = isMarketTradeable(market)
   const flash = usePriceFlash(market.id, market.yesAsk, market.noAsk)
 
   // Many DFlow events group sub-markets under the same `question` (e.g.
@@ -29,8 +31,9 @@ export default function MarketCard({ market, onSelect }) {
   // ("Above 85" / "Above 60" / ...). Promote that label so the cards aren't
   // visually identical. Falls back to the question for plain binary events.
   const rawOutcome = (market.yesSubTitle || market.subtitle || '').trim()
-  const headline = rawOutcome && rawOutcome.toLowerCase() !== (market.question || '').toLowerCase()
-    ? rawOutcome
+  const humanOutcome = humanizeOutcomeLabel(rawOutcome, `${market.question} ${market.eventTitle}`)
+  const headline = humanOutcome && humanOutcome.toLowerCase() !== (market.question || '').toLowerCase()
+    ? humanOutcome
     : market.question
 
   const flashClass = flash === 'up'
@@ -60,10 +63,21 @@ export default function MarketCard({ market, onSelect }) {
           }`}>
             {market.category}
           </span>
-          {isClosed && (
-            <span className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold uppercase rounded bg-terminal-muted/10 border border-terminal-muted/40 text-terminal-muted">
+          {tradeable ? (
+            <span
+              title="Open for trading"
+              className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold uppercase rounded bg-terminal-green/10 border border-terminal-green/40 text-terminal-green"
+            >
+              <Zap size={9} className="fill-current" />
+              Tradeable
+            </span>
+          ) : (
+            <span
+              title={isClosed ? 'Trading window has ended' : 'Not currently tradeable'}
+              className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold uppercase rounded bg-terminal-muted/10 border border-terminal-muted/40 text-terminal-muted"
+            >
               <Lock size={9} />
-              Closed
+              {isClosed ? 'Closed' : 'Not Tradeable'}
             </span>
           )}
         </div>
@@ -80,8 +94,8 @@ export default function MarketCard({ market, onSelect }) {
 
       <div className="grid grid-cols-2 gap-2 mb-3">
         <button
-          onClick={(e) => { e.stopPropagation(); if (!isClosed) onSelect({ ...market, side: 'yes' }) }}
-          disabled={isClosed}
+          onClick={(e) => { e.stopPropagation(); if (tradeable) onSelect({ ...market, side: 'yes' }) }}
+          disabled={!tradeable}
           className="flex items-center justify-between px-3 py-2 min-h-[44px] bg-terminal-green/10 border border-terminal-green/30 rounded-lg hover:bg-terminal-green/20 hover:border-terminal-green/50 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-terminal-green/10"
         >
           <span className="flex items-center gap-1 text-xs font-semibold text-terminal-green">
@@ -94,8 +108,8 @@ export default function MarketCard({ market, onSelect }) {
           </span>
         </button>
         <button
-          onClick={(e) => { e.stopPropagation(); if (!isClosed) onSelect({ ...market, side: 'no' }) }}
-          disabled={isClosed}
+          onClick={(e) => { e.stopPropagation(); if (tradeable) onSelect({ ...market, side: 'no' }) }}
+          disabled={!tradeable}
           className="flex items-center justify-between px-3 py-2 min-h-[44px] bg-terminal-red/10 border border-terminal-red/30 rounded-lg hover:bg-terminal-red/20 hover:border-terminal-red/50 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-terminal-red/10"
         >
           <span className="flex items-center gap-1 text-xs font-semibold text-terminal-red">

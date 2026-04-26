@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatUsd, formatCompactNumber, priceToPercent, priceToPercentFine, shortAddress } from './format'
+import { formatUsd, formatCompactNumber, priceToPercent, priceToPercentFine, shortAddress, humanizeOutcomeLabel } from './format'
 
 describe('format', () => {
   it('formatUsd handles dollars, K, M, B', () => {
@@ -26,5 +26,22 @@ describe('format', () => {
   it('shortAddress preserves short strings', () => {
     expect(shortAddress('abc')).toBe('abc')
     expect(shortAddress('abcdef1234567890')).toBe('abcd…7890')
+  })
+
+  it('humanizeOutcomeLabel appends % for score/rating contexts', () => {
+    expect(humanizeOutcomeLabel('Above 85', 'Michael Rotten Tomatoes score?')).toBe('Above 85%')
+    expect(humanizeOutcomeLabel('Below 60', 'Movie rating')).toBe('Below 60%')
+    expect(humanizeOutcomeLabel('Above 85', 'Pro Basketball Champion')).toBe('Above 85')
+  })
+
+  it('humanizeOutcomeLabel prepends $ for price contexts', () => {
+    expect(humanizeOutcomeLabel('70,000 to 74,999.99', 'Bitcoin price at the end of 2026')).toBe('$70,000 to $74,999.99')
+    expect(humanizeOutcomeLabel('999.99 or below', 'Ethereum price at the end of 2026')).toBe('$999.99 or below')
+  })
+
+  it('humanizeOutcomeLabel leaves non-numeric labels alone', () => {
+    expect(humanizeOutcomeLabel('Liverpool', 'English Premier League Winner?')).toBe('Liverpool')
+    expect(humanizeOutcomeLabel('', 'whatever')).toBe('')
+    expect(humanizeOutcomeLabel(null, 'whatever')).toBe('')
   })
 })

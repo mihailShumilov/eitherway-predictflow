@@ -6,7 +6,7 @@ import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
 // trade against fake prices. Mock fallback stays available on devnet/other.
 const ALLOW_MOCK_FALLBACK = (SOLANA_NETWORK || '').toLowerCase() !== 'mainnet'
 import { fetchWithRetry } from '../lib/http'
-import { extractOutcomeMints } from '../lib/normalize'
+import { extractOutcomeMints, isMarketTradeable } from '../lib/normalize'
 import { safeGet, safeSet } from '../lib/storage'
 import { toCloseTimeIso } from '../lib/dateFormat'
 
@@ -50,6 +50,7 @@ export function MarketsProvider({ children }) {
   const [selectedCategory, setSelectedCategory] = useState('All')
   const [selectedSubcategory, setSelectedSubcategory] = useState('')
   const [sortBy, setSortBy] = useState('volume')
+  const [tradeableOnly, setTradeableOnly] = useState(false)
 
   const fetchEvents = useCallback(async () => {
     setLoading(true)
@@ -229,6 +230,7 @@ export function MarketsProvider({ children }) {
     return markets
       .filter(m => selectedCategory === 'All' || m.category === selectedCategory)
       .filter(m => !selectedSubcategory || (m.tags || []).includes(selectedSubcategory))
+      .filter(m => !tradeableOnly || isMarketTradeable(m))
       .filter(m => {
         if (!q) return true
         return (
@@ -254,7 +256,7 @@ export function MarketsProvider({ children }) {
           default: return 0
         }
       })
-  }, [markets, selectedCategory, selectedSubcategory, searchQuery, sortBy])
+  }, [markets, selectedCategory, selectedSubcategory, searchQuery, sortBy, tradeableOnly])
 
   return (
     <MarketsContext.Provider value={{
@@ -274,6 +276,8 @@ export function MarketsProvider({ children }) {
       setSelectedSubcategory,
       sortBy,
       setSortBy,
+      tradeableOnly,
+      setTradeableOnly,
       refresh: fetchEvents,
     }}>
       {children}

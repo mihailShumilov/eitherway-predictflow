@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useState } from 'react'
 import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock, Share2, Check } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { formatMarketCloseFull } from '../lib/dateFormat'
-import { formatCompactNumber } from '../lib/format'
+import { formatCompactNumber, humanizeOutcomeLabel } from '../lib/format'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import DepthChart from './DepthChart'
 import OrderBook from './OrderBook'
@@ -47,8 +47,9 @@ export default function MarketDetail({ market, onClose }) {
   const isClosed = hasClose && hoursLeft <= 0
 
   const rawOutcome = (market.yesSubTitle || market.subtitle || '').trim()
-  const headline = rawOutcome && rawOutcome.toLowerCase() !== (market.question || '').toLowerCase()
-    ? rawOutcome
+  const humanOutcome = humanizeOutcomeLabel(rawOutcome, `${market.question} ${market.eventTitle}`)
+  const headline = humanOutcome && humanOutcome.toLowerCase() !== (market.question || '').toLowerCase()
+    ? humanOutcome
     : market.question
   const urgencyColor = !hasClose
     ? 'text-terminal-muted'

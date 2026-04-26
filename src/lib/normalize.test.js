@@ -5,6 +5,7 @@ import {
   normalizeTrade,
   normalizeMarket,
   extractOutcomeMints,
+  isMarketTradeable,
 } from './normalize'
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
@@ -131,5 +132,31 @@ describe('extractOutcomeMints', () => {
   it('returns nulls for empty/missing data', () => {
     expect(extractOutcomeMints({})).toEqual({ yesMint: null, noMint: null })
     expect(extractOutcomeMints(null)).toEqual({ yesMint: null, noMint: null })
+  })
+})
+
+describe('isMarketTradeable', () => {
+  const future = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
+  const past = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
+
+  it('returns true for active markets with a future close time', () => {
+    expect(isMarketTradeable({ status: 'active', closeTime: future })).toBe(true)
+  })
+
+  it('returns false when status is finalized', () => {
+    expect(isMarketTradeable({ status: 'finalized', closeTime: future })).toBe(false)
+  })
+
+  it('returns false when close time has passed', () => {
+    expect(isMarketTradeable({ status: 'active', closeTime: past })).toBe(false)
+  })
+
+  it('treats missing close time as tradeable when status is active', () => {
+    expect(isMarketTradeable({ status: 'active' })).toBe(true)
+  })
+
+  it('returns false for nullish input', () => {
+    expect(isMarketTradeable(null)).toBe(false)
+    expect(isMarketTradeable(undefined)).toBe(false)
   })
 })
