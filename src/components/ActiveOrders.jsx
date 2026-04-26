@@ -16,6 +16,7 @@ const STATUS_CONFIG = {
   pending: { label: 'Pending', icon: Clock, color: 'text-terminal-yellow' },
   executing: { label: 'Executing', icon: Loader2, color: 'text-terminal-accent', spin: true },
   filled: { label: 'Filled', icon: Check, color: 'text-terminal-green' },
+  failed: { label: 'Failed', icon: AlertTriangle, color: 'text-terminal-red' },
   cancelled: { label: 'Cancelled', icon: X, color: 'text-terminal-muted' },
 }
 
