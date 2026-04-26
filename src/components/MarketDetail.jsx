@@ -77,8 +77,10 @@ export default function MarketDetail({ market, onClose }) {
                 <ArrowLeft size={12} />
                 Back to Markets
               </button>
-              <h2 className="text-lg font-semibold text-white leading-tight">{headline}</h2>
-              <p className="text-xs text-terminal-muted mt-1">{market.eventTitle}</p>
+              <h2 className="text-lg font-semibold text-white leading-tight">{market.eventTitle}</h2>
+              {headline && headline.toLowerCase() !== (market.eventTitle || '').toLowerCase() && (
+                <p className="text-sm text-terminal-muted mt-1">{headline}</p>
+              )}
               <div className="flex items-center gap-4 mt-3 flex-wrap">
                 {isClosed && (
                   <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-terminal-muted/10 border border-terminal-muted/40 text-terminal-muted">

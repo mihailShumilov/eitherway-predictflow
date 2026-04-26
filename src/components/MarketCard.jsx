@@ -49,10 +49,12 @@ export default function MarketCard({ market, onSelect }) {
     >
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex-1 min-w-0">
-          <p className="text-xs text-terminal-muted mb-1 truncate">{market.eventTitle}</p>
-          <h3 className="text-sm font-medium text-terminal-text group-hover:text-white transition-colors leading-snug">
-            {headline}
+          <h3 className="text-sm font-semibold text-terminal-text group-hover:text-white transition-colors leading-snug truncate">
+            {market.eventTitle}
           </h3>
+          {headline && headline.toLowerCase() !== (market.eventTitle || '').toLowerCase() && (
+            <p className="text-xs text-terminal-muted mt-0.5 truncate">{headline}</p>
+          )}
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
           <span className={`px-2 py-0.5 text-[10px] font-semibold uppercase rounded bg-terminal-card border border-terminal-border ${
