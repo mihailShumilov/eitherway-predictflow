@@ -138,21 +138,28 @@ describe('extractOutcomeMints', () => {
 describe('isMarketTradeable', () => {
   const future = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
   const past = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
+  const mints = { yesMint: 'YYY', noMint: 'NNN' }
 
-  it('returns true for active markets with a future close time', () => {
-    expect(isMarketTradeable({ status: 'active', closeTime: future })).toBe(true)
+  it('returns true for active markets with future close time and mints', () => {
+    expect(isMarketTradeable({ status: 'active', closeTime: future, ...mints })).toBe(true)
   })
 
   it('returns false when status is finalized', () => {
-    expect(isMarketTradeable({ status: 'finalized', closeTime: future })).toBe(false)
+    expect(isMarketTradeable({ status: 'finalized', closeTime: future, ...mints })).toBe(false)
   })
 
   it('returns false when close time has passed', () => {
-    expect(isMarketTradeable({ status: 'active', closeTime: past })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: past, ...mints })).toBe(false)
   })
 
-  it('treats missing close time as tradeable when status is active', () => {
-    expect(isMarketTradeable({ status: 'active' })).toBe(true)
+  it('treats missing close time as tradeable when status and mints are set', () => {
+    expect(isMarketTradeable({ status: 'active', ...mints })).toBe(true)
+  })
+
+  it('returns false when outcome mints are missing', () => {
+    expect(isMarketTradeable({ status: 'active', closeTime: future })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: future, yesMint: 'YYY' })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: future, noMint: 'NNN' })).toBe(false)
   })
 
   it('returns false for nullish input', () => {
