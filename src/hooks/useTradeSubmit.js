@@ -18,6 +18,7 @@ import { safeErrorMessage } from '../lib/errorMessage'
 import { classifyOrderResponse, isGateRejection } from '../lib/dflowErrors'
 import { formatSimulationError } from '../lib/simulationErrors'
 import { appendPosition } from '../lib/storage'
+import { emitLocalTrade } from '../lib/tradeEvents'
 import { calculateFee } from '../services/feeService'
 import { recordReferralEarning } from '../services/referralService'
 import { FEE_CONFIG, isFeeWalletConfigured } from '../config/fees'
@@ -389,6 +390,21 @@ export function useTradeSubmit(market) {
       track('trade_filled', {
         marketId: market.id, side, amount: parseFloat(amount),
         simulated: !txSigned, feeStatus, feeAmount: feeCalc.feeAmount,
+      })
+      // Optimistically broadcast to RecentTrades — DFlow's /trades feed lags
+      // by several seconds and the user expects to see their own fill on the
+      // tape immediately. RecentTrades dedupes by txSignature once the
+      // indexed version arrives.
+      emitLocalTrade({
+        id: `local-${txSignature || idempotencyKey}`,
+        marketId: market.id,
+        ticker: market.ticker || market.id,
+        time: order.timestamp,
+        side: side === 'no' ? 'sell' : 'buy',
+        price,
+        shares: parseFloat(shares),
+        amount: parseFloat(amount),
+        txSignature,
       })
       setResult({ success: true, order, feeCalc, feeStatus, feeError })
       setQuote(null)
