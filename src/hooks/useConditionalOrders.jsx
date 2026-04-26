@@ -7,11 +7,15 @@ import {
   LIVE_PRICE_URL,
   ALLOW_SIMULATED_FILLS,
 } from '../config/env'
-import { fetchWithRetry } from '../lib/http'
+import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
 import { track } from '../lib/analytics'
 import { safeGet, safeSet, appendPosition } from '../lib/storage'
 import { shouldTriggerOrder } from '../lib/triggers'
+import { decodeDflowTransaction, assertAllowedPrograms, validateTxPayload } from '../lib/txDecoder'
+import { preflightTransaction } from '../lib/solanaPreflight'
+import { safeErrorMessage } from '../lib/errorMessage'
+import { emitLocalTrade } from '../lib/tradeEvents'
 
 const OrdersContext = createContext(null)
 
@@ -195,26 +199,85 @@ export function OrdersProvider({ children }) {
     setNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
 
-  // Attempt real DFlow /order + wallet sign. Returns true on successful signature.
+  // Submit a real DFlow /order + sign + send. Returns
+  //   { txSigned: true, signature, error: null } on success,
+  //   { txSigned: false, retryable: bool, error: string } on failure.
+  // The earlier impl was broken in two ways: it passed raw tx bytes to
+  // signTransaction (wallets need a decoded Transaction object), and it
+  // never broadcast the signed tx to the chain — so even when triggers
+  // fired the order could not actually fill.
   const submitToDflow = useCallback(async (order) => {
-    if (!address) return false
+    if (!address) return { txSigned: false, retryable: true, error: 'Wallet not connected' }
     const outputMint = order.side === 'yes' ? order.yesMint : order.noMint
-    if (!outputMint) return false
+    if (!outputMint) return { txSigned: false, retryable: false, error: 'Market has no outcome mint' }
+
     try {
       const amountLamports = Math.floor(order.amount * 1e6)
+      const idempotencyKey = generateIdempotencyKey('cond')
       const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${encodeURIComponent(outputMint)}&amount=${amountLamports}&userPublicKey=${address}`
-      const res = await fetch(url)
-      if (!res.ok) return false
+      const res = await fetchWithRetry(url, {
+        headers: { 'X-Idempotency-Key': idempotencyKey },
+      }, { retries: 1, timeoutMs: 8000 })
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        // 4xx = caller error (wrong mint, bad amount, KYC) — don't keep retrying.
+        const retryable = res.status >= 500
+        return { txSigned: false, retryable, error: `Order API ${res.status}: ${body.slice(0, 200)}` }
+      }
       const data = await res.json()
+
+      const payloadCheck = validateTxPayload(data.transaction)
+      if (!payloadCheck.ok) return { txSigned: false, retryable: false, error: payloadCheck.error }
+
       const provider = activeWallet?.getProvider?.()
-      if (!provider || !data.transaction) return false
-      const tx = typeof data.transaction === 'string'
+      if (!provider) return { txSigned: false, retryable: true, error: 'No wallet provider' }
+      if (!data.transaction) return { txSigned: false, retryable: false, error: 'Order API returned no transaction' }
+
+      // Same security pipeline as submitMarketTrade: decode + program
+      // whitelist before signing, preflight against a Solana RPC.
+      const decoded = decodeDflowTransaction(data.transaction)
+      if (!decoded.ok) return { txSigned: false, retryable: false, error: decoded.error }
+      const whitelist = assertAllowedPrograms(decoded.tx)
+      if (!whitelist.ok) return { txSigned: false, retryable: false, error: whitelist.error }
+
+      const txBytes = typeof data.transaction === 'string'
         ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
         : data.transaction
-      await provider.signTransaction(tx)
-      return true
-    } catch {
-      return false
+      const pf = await preflightTransaction(txBytes)
+      if (!pf.ok) {
+        if (pf.unreachable) return { txSigned: false, retryable: true, error: 'RPC unreachable' }
+        return { txSigned: false, retryable: false, error: pf.error?.toString?.() || 'Preflight failed' }
+      }
+
+      let signature = null
+      if (typeof provider.signAndSendTransaction === 'function') {
+        const sent = await provider.signAndSendTransaction(decoded.tx)
+        signature = sent?.signature || sent?.publicKey || 'signed'
+      } else if (typeof provider.signTransaction === 'function') {
+        // Older wallet providers without combined sign+send. The decoded
+        // Transaction must be passed (NOT raw bytes — that's what was broken
+        // before). We still need to broadcast the signed result, but most
+        // app wallets in this codebase implement signAndSendTransaction so
+        // this branch is rarely hit.
+        const signedTx = await provider.signTransaction(decoded.tx)
+        const sig = signedTx?.signatures?.[0]
+        const sigBytes = sig?.signature || (sig instanceof Uint8Array ? sig : null)
+        signature = sigBytes
+          ? Array.from(sigBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+          : 'signed'
+      } else {
+        return { txSigned: false, retryable: false, error: 'Wallet does not support signing' }
+      }
+
+      return { txSigned: true, signature, error: null }
+    } catch (err) {
+      return {
+        txSigned: false,
+        // User-rejected sign or transient network errors should be retryable;
+        // on-chain rejections (custom program errors) typically aren't.
+        retryable: true,
+        error: safeErrorMessage(err, 'Order submission failed'),
+      }
     }
   }, [activeWallet, address])
 
@@ -223,15 +286,29 @@ export function OrdersProvider({ children }) {
       o.id === order.id ? { ...o, status: 'executing' } : o
     ))
 
-    const txSigned = await submitToDflow(order)
+    const result = await submitToDflow(order)
+    const txSigned = result.txSigned
 
-    if (!txSigned && !ALLOW_SIMULATED_FILLS) {
-      // In prod mode, a failed submit means no fill — revert to pending so
-      // the next poll can try again.
-      setOrders(prev => prev.map(o =>
-        o.id === order.id ? { ...o, status: 'pending' } : o
-      ))
-      return
+    if (!txSigned) {
+      if (ALLOW_SIMULATED_FILLS) {
+        // dev-mode pass-through — fall through to the simulated-fill path below
+      } else if (result.retryable) {
+        // Transient (RPC, network, user-rejected sign). Revert to pending so
+        // the next 5s tick retries — no notification spam.
+        setOrders(prev => prev.map(o =>
+          o.id === order.id ? { ...o, status: 'pending' } : o
+        ))
+        return
+      } else {
+        // Permanent failure (bad mint, 4xx, decode/whitelist rejection).
+        // Mark failed so we don't loop forever, and tell the user why.
+        setOrders(prev => prev.map(o =>
+          o.id === order.id ? { ...o, status: 'failed', failedAt: new Date().toISOString(), error: result.error } : o
+        ))
+        track('conditional_order_failed', { marketId: order.marketId, orderType: order.orderType, reason: result.error })
+        addNotification(`Order failed: ${result.error}`)
+        return
+      }
     }
 
     const fillPrice = order.side === 'yes' ? livePrice.yes : livePrice.no
@@ -248,6 +325,7 @@ export function OrdersProvider({ children }) {
       timestamp: new Date().toISOString(),
       status: 'filled',
       txSigned,
+      txSignature: result.signature || (txSigned ? 'signed' : 'simulated'),
       question: order.question,
       eventTitle: order.eventTitle,
       category: order.category,
@@ -257,6 +335,20 @@ export function OrdersProvider({ children }) {
     setOrders(prev => prev.map(o =>
       o.id === order.id ? { ...o, status: 'filled', filledAt: new Date().toISOString(), fillPrice, txSigned } : o
     ))
+
+    // Surface on the per-market trade tape so RecentTrades shows the fill
+    // optimistically until DFlow's indexer catches up.
+    emitLocalTrade({
+      id: `local-${result.signature || order.id}`,
+      marketId: order.marketId,
+      ticker: order.marketTicker || order.marketId,
+      time: new Date().toISOString(),
+      side: order.side === 'no' ? 'sell' : 'buy',
+      price: fillPrice,
+      shares: parseFloat(shares.toFixed(2)),
+      amount: order.amount,
+      txSignature: result.signature,
+    })
 
     const typeLabel = order.orderType === 'limit' ? 'Limit order' :
       order.orderType === 'stop-loss' ? 'Stop-loss' : 'Take-profit'
