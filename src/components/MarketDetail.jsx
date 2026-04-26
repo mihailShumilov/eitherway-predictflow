@@ -45,6 +45,11 @@ export default function MarketDetail({ market, onClose }) {
   const closeDate = formatMarketCloseFull(market.closeTime)
   const hoursLeft = hasClose ? (closeMs - Date.now()) / 3600000 : Infinity
   const isClosed = hasClose && hoursLeft <= 0
+
+  const rawOutcome = (market.yesSubTitle || market.subtitle || '').trim()
+  const headline = rawOutcome && rawOutcome.toLowerCase() !== (market.question || '').toLowerCase()
+    ? rawOutcome
+    : market.question
   const urgencyColor = !hasClose
     ? 'text-terminal-muted'
     : hoursLeft < 4 ? 'text-terminal-red' : hoursLeft < 24 ? 'text-terminal-yellow' : 'text-terminal-muted'
@@ -71,7 +76,7 @@ export default function MarketDetail({ market, onClose }) {
                 <ArrowLeft size={12} />
                 Back to Markets
               </button>
-              <h2 className="text-lg font-semibold text-white leading-tight">{market.question}</h2>
+              <h2 className="text-lg font-semibold text-white leading-tight">{headline}</h2>
               <p className="text-xs text-terminal-muted mt-1">{market.eventTitle}</p>
               <div className="flex items-center gap-4 mt-3 flex-wrap">
                 {isClosed && (

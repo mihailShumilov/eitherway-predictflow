@@ -24,6 +24,15 @@ export default function MarketCard({ market, onSelect }) {
   const isClosed = Number.isFinite(closeMs) && closeMs <= Date.now()
   const flash = usePriceFlash(market.id, market.yesAsk, market.noAsk)
 
+  // Many DFlow events group sub-markets under the same `question` (e.g.
+  // "Michael Rotten Tomatoes score?") with the differentiator in `yesSubTitle`
+  // ("Above 85" / "Above 60" / ...). Promote that label so the cards aren't
+  // visually identical. Falls back to the question for plain binary events.
+  const rawOutcome = (market.yesSubTitle || market.subtitle || '').trim()
+  const headline = rawOutcome && rawOutcome.toLowerCase() !== (market.question || '').toLowerCase()
+    ? rawOutcome
+    : market.question
+
   const flashClass = flash === 'up'
     ? 'animate-flash-green'
     : flash === 'down'
@@ -39,7 +48,7 @@ export default function MarketCard({ market, onSelect }) {
         <div className="flex-1 min-w-0">
           <p className="text-xs text-terminal-muted mb-1 truncate">{market.eventTitle}</p>
           <h3 className="text-sm font-medium text-terminal-text group-hover:text-white transition-colors leading-snug">
-            {market.question}
+            {headline}
           </h3>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
