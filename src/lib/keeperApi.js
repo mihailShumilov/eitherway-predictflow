@@ -126,6 +126,14 @@ export async function cancelOrder(id) {
   return request(`/orders/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
 }
 
+// Hard-delete terminal-state orders (cancelled / failed / expired). When
+// `marketTicker` is set, only that market's rows are deleted. Returns
+// `{ removed: number }`.
+export async function clearOrders({ marketTicker } = {}) {
+  const q = marketTicker ? `?market=${encodeURIComponent(marketTicker)}` : ''
+  return request(`/orders${q}`, { method: 'DELETE' })
+}
+
 // Durable nonce endpoints (Phase 2 — backend defines these alongside orders)
 export async function getDurableNonce({ marketTicker }) {
   const q = `?market=${encodeURIComponent(marketTicker)}`

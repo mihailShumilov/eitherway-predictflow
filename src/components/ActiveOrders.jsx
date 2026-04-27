@@ -25,8 +25,8 @@ const STATUS_CONFIG = {
 }
 
 export default function ActiveOrders({ marketId, marketTicker }) {
-  const { orders: localOrders, cancelOrder: cancelLocal, cancelAll: cancelAllLocal, clearCompleted } = useConditionalOrders()
-  const { orders: keeperOrders, cancelOrder: cancelKeeper } = useKeeperOrders()
+  const { orders: localOrders, cancelOrder: cancelLocal, cancelAll: cancelAllLocal, clearCompleted: clearLocalCompleted } = useConditionalOrders()
+  const { orders: keeperOrders, cancelOrder: cancelKeeper, clearOrders: clearKeeper } = useKeeperOrders()
 
   // Tag orders with their backing source so cancelOrder routes to the right
   // store and the row can show a "cloud" badge for keeper-backed orders.
@@ -63,11 +63,23 @@ export default function ActiveOrders({ marketId, marketTicker }) {
   // API doesn't expose a bulk endpoint). Without this, keeper orders keep
   // firing after the user clicks Cancel All.
   const cancelAll = async () => {
-    const cancellable = relevantOrders.filter(o => o.status === 'pending')
+    const cancellable = relevantOrders.filter(o =>
+      o.status === 'pending' || o.status === 'armed' || o.status === 'submitting'
+    )
     cancelAllLocal()
     await Promise.allSettled(
       cancellable.filter(o => o.source === 'keeper').map(o => cancelKeeper(o.id)),
     )
+  }
+
+  // Clear completed dispatches to BOTH backends so terminal rows
+  // (cancelled / failed / expired) disappear from the list — local
+  // ones via the legacy hook, keeper-side via the new DELETE /orders
+  // endpoint. The keeper call is best-effort; UI still updates from
+  // the optimistic state in useKeeperOrders.
+  const clearCompleted = async () => {
+    clearLocalCompleted()
+    await clearKeeper({ marketTicker })
   }
 
   if (relevantOrders.length === 0) return null
@@ -146,11 +158,11 @@ export default function ActiveOrders({ marketId, marketTicker }) {
                     <StatusIcon size={10} className={statusConf.spin ? 'animate-spin' : ''} />
                     {statusConf.label}
                   </span>
-                  {order.status === 'pending' && (
+                  {(order.status === 'pending' || order.status === 'armed' || order.status === 'submitting') && (
                     <button
                       onClick={() => cancelOrder(order.id)}
                       className="p-1 rounded hover:bg-terminal-red/10 text-terminal-muted hover:text-terminal-red transition-all"
-                      title="Cancel order"
+                      title={order.status === 'submitting' ? 'Cancel — broadcast already sent, on-chain outcome may still settle' : 'Cancel order'}
                     >
                       <X size={12} />
                     </button>

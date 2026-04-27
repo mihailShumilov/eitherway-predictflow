@@ -14,7 +14,7 @@ import React, {
   useMemo, useState,
 } from 'react'
 import { useWallet } from './useWallet'
-import { listOrders, cancelOrder as apiCancel, isKeeperConfigured, getSession } from '../lib/keeperApi'
+import { listOrders, cancelOrder as apiCancel, clearOrders as apiClear, isKeeperConfigured, getSession } from '../lib/keeperApi'
 
 const POLL_MS = 5000
 
@@ -101,12 +101,34 @@ export function KeeperOrdersProvider({ children }) {
     }
   }, [refresh])
 
+  // Wipe terminal-state rows server-side (cancelled / failed / expired).
+  // Optional `marketTicker` narrows to a single market; otherwise clears
+  // every terminal row this wallet owns.
+  const clearOrders = useCallback(async ({ marketTicker } = {}) => {
+    try {
+      const result = await apiClear({ marketTicker })
+      // Optimistically drop the rows we know server-side just deleted —
+      // the next poll will reconcile if anything diverged.
+      setOrders(prev => prev.filter(o => {
+        const terminal = ['cancelled', 'failed', 'expired'].includes(o.status)
+        if (!terminal) return true
+        if (marketTicker && o.marketTicker !== marketTicker) return true
+        return false
+      }))
+      setTimeout(refresh, 800)
+      return { ok: true, removed: result?.removed ?? 0 }
+    } catch (err) {
+      return { ok: false, error: err.message || 'Clear failed' }
+    }
+  }, [refresh])
+
   const value = useMemo(() => ({
     orders,
     error,
     refresh,
     cancelOrder,
-  }), [orders, error, refresh, cancelOrder])
+    clearOrders,
+  }), [orders, error, refresh, cancelOrder, clearOrders])
 
   return (
     <KeeperOrdersContext.Provider value={value}>
@@ -120,7 +142,13 @@ export function useKeeperOrders() {
   if (!ctx) {
     // No provider mounted (keeper disabled or app structure changed) —
     // return an empty stub so consuming components can render harmlessly.
-    return { orders: [], error: null, refresh: async () => {}, cancelOrder: async () => ({ ok: false }) }
+    return {
+      orders: [],
+      error: null,
+      refresh: async () => {},
+      cancelOrder: async () => ({ ok: false }),
+      clearOrders: async () => ({ ok: false, removed: 0 }),
+    }
   }
   return ctx
 }

@@ -40,6 +40,8 @@ import { DFLOW_ORDER_URL } from '../config/env'
  * @param {object} [opts.provider]            - wallet provider (signTransaction / signAndSendTransaction)
  * @param {boolean} [opts.preflight]          - run simulateTransaction before signing (default true)
  * @param {'send'|'sign-only'} [opts.broadcast] - 'send' calls signAndSendTransaction; 'sign-only' returns the signed tx unsent (keeper flow)
+ * @param {number|string} [opts.slippageBps]  - DFlow `slippageBps`. Number for explicit bps, or "auto" for DFlow auto-routing
+ * @param {number} [opts.priceImpactTolerancePct] - DFlow `priceImpactTolerancePct` (0-100)
  *
  * @returns {Promise<
  *     | { ok: true, decodedTx, signedTx?, signature?: string, txSigned: boolean }
@@ -51,6 +53,7 @@ export async function runOrderPipeline(opts) {
     inputMint, outputMint, amountLamports, userPublicKey,
     idempotencyPrefix = 'ord',
     provider, preflight = true, broadcast = 'send',
+    slippageBps, priceImpactTolerancePct,
   } = opts
 
   if (!provider) return { ok: false, retryable: true, error: 'No wallet provider' }
@@ -63,7 +66,17 @@ export async function runOrderPipeline(opts) {
   // 1. Fetch DFlow /order
   let data
   try {
-    const url = `${DFLOW_ORDER_URL}?inputMint=${encodeURIComponent(inputMint)}&outputMint=${encodeURIComponent(outputMint)}&amount=${amountLamports}&userPublicKey=${userPublicKey}`
+    const params = [
+      `inputMint=${encodeURIComponent(inputMint)}`,
+      `outputMint=${encodeURIComponent(outputMint)}`,
+      `amount=${amountLamports}`,
+      `userPublicKey=${userPublicKey}`,
+    ]
+    if (slippageBps != null) params.push(`slippageBps=${encodeURIComponent(slippageBps)}`)
+    if (priceImpactTolerancePct != null) {
+      params.push(`priceImpactTolerancePct=${encodeURIComponent(priceImpactTolerancePct)}`)
+    }
+    const url = `${DFLOW_ORDER_URL}?${params.join('&')}`
     const res = await fetchWithRetry(url, {
       headers: { 'X-Idempotency-Key': generateIdempotencyKey(idempotencyPrefix) },
     }, { retries: 1, timeoutMs: 8000 })

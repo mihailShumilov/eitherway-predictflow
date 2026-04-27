@@ -37,6 +37,7 @@ import { decrypt } from './encryption'
 import { audit } from './audit'
 import { incr } from './metrics'
 import { bytesToBase64 } from './crypto'
+import { CONFIRMATION_GIVE_UP_MS } from './constants'
 
 type OrderRowFull = {
   id: string
@@ -58,6 +59,7 @@ type OrderRowConfirmation = {
   market_ticker: string
   trigger_price: number
   fill_signature: string
+  updated_at: number
 }
 
 export async function submitOrder(env: Env, orderId: string): Promise<void> {
@@ -146,7 +148,7 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
 export async function checkSubmittedOrder(env: Env, orderId: string): Promise<void> {
   const row = await env.DB
     .prepare(
-      `SELECT id, wallet, market_ticker, trigger_price, fill_signature
+      `SELECT id, wallet, market_ticker, trigger_price, fill_signature, updated_at
          FROM orders
         WHERE id = ? AND status = 'submitting' AND fill_signature IS NOT NULL`,
     )
@@ -155,6 +157,14 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
   if (!row) return  // moved to filled/failed/cancelled by another path
 
   const status = await getSignatureStatus(env, row.fill_signature)
+  const ageMs = Date.now() - row.updated_at
+  console.log('check_submitted_order', {
+    id: orderId,
+    signature: row.fill_signature,
+    confirmed: status.confirmed,
+    error: status.error ?? null,
+    ageMs,
+  })
   if (status.error) {
     await markFailed(env, row, status.error)
     await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: status.error })
@@ -169,6 +179,7 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
       )
       .bind(row.trigger_price, now, now, row.id)
       .run()
+    console.log('order_filled', { id: orderId, signature: row.fill_signature })
     await audit(env, {
       wallet: row.wallet,
       orderId: row.id,
@@ -177,8 +188,20 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
     })
     await incr(env, 'order_filled', { marketTicker: row.market_ticker })
     await incr(env, 'submit_succeeded', { marketTicker: row.market_ticker })
+    return
   }
-  // pending/processed but not yet confirmed: leave; next alarm re-checks.
+  // Confirmation neither succeeded nor errored. If the broadcast was a
+  // long time ago, the tx almost certainly never landed (most often a
+  // durable-nonce mismatch — the runtime rejects pre-inclusion, so
+  // getSignatureStatuses returns null indefinitely). Give up so the row
+  // doesn't poll forever.
+  if (ageMs > CONFIRMATION_GIVE_UP_MS) {
+    console.error('check_submitted_order_timeout', { id: orderId, signature: row.fill_signature, ageMs })
+    await markFailed(env, row, `confirmation_timeout_after_${Math.floor(ageMs / 1000)}s`)
+    await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: 'confirmation_timeout' })
+    return
+  }
+  // Otherwise leave alone; next alarm re-checks.
 }
 
 async function markFailed(env: Env, row: { id: string; wallet: string }, reason: string): Promise<void> {

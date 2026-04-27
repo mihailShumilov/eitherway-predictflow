@@ -33,7 +33,7 @@ import { useKyc } from './useKyc'
 import { USDC_MINT, SOLANA_RPC_ENDPOINTS, SOLANA_RPC_URL } from '../config/env'
 import { runOrderPipeline } from '../lib/orderTxPipeline'
 import { signIn } from '../lib/walletAuth'
-import { getSession, getDurableNonce, registerDurableNonce, placeOrder, isKeeperConfigured } from '../lib/keeperApi'
+import { getSession, getDurableNonce, registerDurableNonce, placeOrder, listOrders, isKeeperConfigured } from '../lib/keeperApi'
 import {
   createDurableNonce,
   composeOrderWithNonce,
@@ -134,6 +134,26 @@ export function useKeeperLimitOrder() {
     // 1. Session
     await ensureSession(activeWallet, address)
 
+    // 1b. Refuse if a non-terminal keeper order already exists for this market.
+    //     The server enforces the same rule (409 duplicate_pending_order), so
+    //     this client check is purely UX — fail before the wallet popup
+    //     instead of after. Race-safe because the server has the final say.
+    try {
+      const existing = await listOrders({ market: market.ticker })
+      const live = (existing?.orders ?? []).find((o) =>
+        o.status === 'pending' || o.status === 'armed' || o.status === 'submitting'
+      )
+      if (live) {
+        throw new Error(
+          'You already have an active limit order for this market. Cancel it before placing another.',
+        )
+      }
+    } catch (err) {
+      // Re-throw the duplicate guard, but tolerate listOrders failures —
+      // the server will catch the duplicate at POST time and return 409.
+      if (err?.message?.startsWith('You already have')) throw err
+    }
+
     // 2. Nonce account
     const nonce = await ensureNonce({
       activeWallet,
@@ -189,6 +209,15 @@ export function useKeeperLimitOrder() {
       // submission failure modes. The keeper validates at submit time.
       preflight: false,
       broadcast: 'sign-only',
+      // Wide slippage tolerance: a keeper-held tx may sit signed for hours
+      // before the trigger fires. The orderbook can move materially in
+      // that window, and DFlow's default tight slippage causes the swap
+      // to revert at submission time (FillUnderproduced / FillOverconsumed
+      // / generic init-escrow rejections). The user's price commitment is
+      // captured by the trigger condition, so we let the actual fill
+      // execute against whatever the book looks like at fire time.
+      slippageBps: 'auto',
+      priceImpactTolerancePct: 10,
     })
     if (!result.ok) throw new Error(result.error)
 

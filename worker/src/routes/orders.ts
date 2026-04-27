@@ -73,6 +73,29 @@ orders.post('/', async (c) => {
     return apiError(c, 400, 'nonce_not_registered')
   }
 
+  // One non-terminal keeper order per (wallet, market). Multiple concurrent
+  // pending orders for the same market all signed against the same durable
+  // nonce value would race — the first to fire advances the nonce, every
+  // subsequent submission becomes a "ghost tx" that the runtime rejects
+  // pre-inclusion (Helius shows 'not found' forever). Refusing here forces
+  // the user to cancel before placing another, which keeps each order
+  // tied to a fresh nonce sequence and avoids cascading failed escrows.
+  const existingNonTerminal = await c.env.DB
+    .prepare(
+      `SELECT id FROM orders
+        WHERE wallet = ? AND market_ticker = ?
+          AND status IN ('pending', 'armed', 'submitting')
+        LIMIT 1`,
+    )
+    .bind(wallet, body.marketTicker!)
+    .first<{ id: string }>()
+  if (existingNonTerminal) {
+    return apiError(c, 409, 'duplicate_pending_order', {
+      existingId: existingNonTerminal.id,
+      detail: 'Cancel the existing order for this market before placing another.',
+    })
+  }
+
   let signedTxBytes: Uint8Array
   try {
     signedTxBytes = base64ToBytes(body.signedTxBase64)
@@ -205,20 +228,23 @@ orders.get('/:id', async (c) => {
   return c.json(row)
 })
 
+// Cancellation is allowed for any non-terminal status: pending, armed, or
+// submitting. The PriceWatcher DO and submitter both check `status` before
+// taking any further action, so flipping the row to `cancelled` is the
+// soft-cancel signal — for `submitting` rows whose tx already broadcast,
+// the on-chain swap may or may not have landed; cancelling here just stops
+// the keeper from continuing to track it. The user can verify on-chain via
+// the `fill_signature` if any.
 orders.post('/:id/cancel', async (c) => {
   const wallet = c.var.wallet
   const id = c.req.param('id')
   const now = Date.now()
 
-  // Only pending orders can be cancelled. Once `armed` or `submitting` we
-  // race the keeper — it's racing toward a wallet-popup-less submission
-  // anyway, so refuse. Phase 3+ will implement a soft-cancel that the
-  // PriceWatcher DO checks before submitting.
   const upd = await c.env.DB
     .prepare(
       `UPDATE orders
           SET status = 'cancelled', cancelled_at = ?, updated_at = ?
-        WHERE id = ? AND wallet = ? AND status = 'pending'`,
+        WHERE id = ? AND wallet = ? AND status IN ('pending', 'armed', 'submitting')`,
     )
     .bind(now, now, id, wallet)
     .run()
@@ -242,6 +268,41 @@ orders.post('/:id/cancel', async (c) => {
   await incr(c.env, 'order_cancelled', { by: 'user' })
 
   return c.json({ id, status: 'cancelled', cancelledAt: now })
+})
+
+// Clear (hard-delete) terminal-state orders for this wallet. Only matches
+// rows already in cancelled/failed/expired — never wipes an order that
+// could still fire. Optional `?market=<ticker>` narrows to one market.
+//
+// We delete rather than soft-archive: orders are an interactive list, the
+// user expects "clear" to reduce visual clutter, and the row's audit-log
+// entries persist independently in the `audit` table for any post-mortem.
+orders.delete('/', async (c) => {
+  const wallet = c.var.wallet
+  const market = c.req.query('market')
+
+  const conditions = [`wallet = ?`, `status IN ('cancelled', 'failed', 'expired')`]
+  const binds: (string | number)[] = [wallet]
+  if (market) {
+    conditions.push('market_ticker = ?')
+    binds.push(market)
+  }
+
+  const result = await c.env.DB
+    .prepare(`DELETE FROM orders WHERE ${conditions.join(' AND ')}`)
+    .bind(...binds)
+    .run()
+
+  const removed = result.meta.changes ?? 0
+  if (removed > 0) {
+    await audit(c.env, {
+      wallet,
+      event: 'orders.cleared',
+      detail: { count: removed, market: market ?? null },
+      requestId: c.var.requestId,
+    })
+  }
+  return c.json({ removed })
 })
 
 export default orders
