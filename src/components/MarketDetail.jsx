@@ -169,7 +169,7 @@ export default function MarketDetail({ market, onClose }) {
               }>
                 <CandlestickChart market={market} orderLines={orderLines} />
               </Suspense>
-              <ActiveOrders marketId={market.id} />
+              <ActiveOrders marketId={market.id} marketTicker={market.ticker} />
               <DepthChart market={market} />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <OrderBook market={market} />

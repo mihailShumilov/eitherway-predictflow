@@ -3,6 +3,7 @@ import { MarketsProvider, useMarkets } from './hooks/useMarkets'
 import { useRoute } from './hooks/useRoute'
 import { WalletProvider } from './hooks/useWallet'
 import { OrdersProvider, useConditionalOrders } from './hooks/useConditionalOrders'
+import { KeeperOrdersProvider } from './hooks/useKeeperOrders'
 import { DCAProvider, useDCA } from './hooks/useDCA'
 import { LivePricesProvider } from './hooks/useLivePrices'
 import { KycProvider } from './hooks/useKyc'
@@ -175,13 +176,15 @@ export default function App() {
           <MarketsProvider>
             <LivePricesProvider>
               <OrdersProvider>
-                <DCAProvider>
-                  <LegalModalProvider>
-                    <UpgradeModalProvider>
-                      <AppLayout />
-                    </UpgradeModalProvider>
-                  </LegalModalProvider>
-                </DCAProvider>
+                <KeeperOrdersProvider>
+                  <DCAProvider>
+                    <LegalModalProvider>
+                      <UpgradeModalProvider>
+                        <AppLayout />
+                      </UpgradeModalProvider>
+                    </LegalModalProvider>
+                  </DCAProvider>
+                </KeeperOrdersProvider>
               </OrdersProvider>
             </LivePricesProvider>
           </MarketsProvider>

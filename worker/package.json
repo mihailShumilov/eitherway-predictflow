@@ -1,0 +1,32 @@
+{
+  "name": "predictflow-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --env production",
+    "db:migrate:local": "wrangler d1 migrations apply predictflow --local",
+    "db:migrate:remote": "wrangler d1 migrations apply predictflow --remote",
+    "db:migrate:remote:prod": "wrangler d1 migrations apply predictflow --remote --env production",
+    "db:console:local": "wrangler d1 execute predictflow --local --command",
+    "db:console:remote": "wrangler d1 execute predictflow --remote --command",
+    "tail": "wrangler tail",
+    "tail:prod": "wrangler tail --env production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0",
+    "bs58": "^6.0.0",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240924.0",
+    "typescript": "^5.6.2",
+    "vitest": "^1.6.0",
+    "wrangler": "^3.78.0"
+  }
+}

@@ -1,0 +1,74 @@
+# PredictFlow keeper Worker.
+#
+# Deploys to two environments:
+#   - default (no --env flag) → preview/staging
+#   - production (--env production) → live keeper
+#
+# Bindings filled in after first `wrangler d1 create` / DO migration are run.
+# See worker/README.md for the bootstrap steps.
+
+name = "predictflow-keeper"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Objects: PriceWatcher holds the long-lived DFlow `prices` WS
+# subscription for one market and evaluates triggers in-memory. One DO instance
+# per market with pending orders; auto-spins-down when the last order closes.
+[durable_objects]
+bindings = [
+  { name = "PRICE_WATCHER", class_name = "PriceWatcher" },
+]
+
+# DO migration: declare the class names so Cloudflare provisions storage.
+[[migrations]]
+tag = "v1"
+new_classes = ["PriceWatcher"]
+
+# D1 — durable state for orders, sessions, audit log, durable nonces.
+# Fill database_id after running: wrangler d1 create predictflow
+[[d1_databases]]
+binding = "DB"
+database_name = "predictflow"
+database_id = "REPLACE_WITH_DATABASE_ID"
+
+# Secrets (set with `wrangler secret put <NAME>` per environment, never commit):
+#   SIGNED_TX_KEY        — base64-encoded 32-byte AES-256 key for envelope encryption.
+#   DFLOW_API_KEY        — production DFlow x-api-key.
+#   HELIUS_RPC_URL       — Helius mainnet RPC URL with API key embedded.
+#   SESSION_SIGNING_KEY  — 32-byte HMAC key for session token signatures.
+#
+# Public env vars below.
+[vars]
+ENVIRONMENT = "preview"
+DFLOW_REST_BASE = "https://prediction-markets-api.dflow.net"
+DFLOW_TRADE_BASE = "https://quote-api.dflow.net"
+DFLOW_WS_URL = "wss://prediction-markets-api.dflow.net/api/v1/ws"
+SOLANA_NETWORK = "mainnet"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+ALLOWED_ORIGIN = "http://localhost:5173"
+SESSION_TTL_SECONDS = "604800"
+
+# Production environment.
+[env.production]
+name = "predictflow-keeper-prod"
+
+[env.production.durable_objects]
+bindings = [
+  { name = "PRICE_WATCHER", class_name = "PriceWatcher" },
+]
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "predictflow"
+database_id = "REPLACE_WITH_DATABASE_ID"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+DFLOW_REST_BASE = "https://prediction-markets-api.dflow.net"
+DFLOW_TRADE_BASE = "https://quote-api.dflow.net"
+DFLOW_WS_URL = "wss://prediction-markets-api.dflow.net/api/v1/ws"
+SOLANA_NETWORK = "mainnet"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+ALLOWED_ORIGIN = "https://predictflow.app"
+SESSION_TTL_SECONDS = "604800"

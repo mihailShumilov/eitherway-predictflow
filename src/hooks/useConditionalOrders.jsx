@@ -7,20 +7,30 @@ import {
   LIVE_PRICE_URL,
   ALLOW_SIMULATED_FILLS,
 } from '../config/env'
-import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
-import { reportError } from '../lib/errorReporter'
+import { fetchWithRetry } from '../lib/http'
 import { track } from '../lib/analytics'
 import { safeGet, safeSet, appendPosition } from '../lib/storage'
 import { shouldTriggerOrder } from '../lib/triggers'
-import { decodeDflowTransaction, assertAllowedPrograms, validateTxPayload } from '../lib/txDecoder'
-import { preflightTransaction } from '../lib/solanaPreflight'
-import { safeErrorMessage } from '../lib/errorMessage'
+import { runOrderPipeline } from '../lib/orderTxPipeline'
 import { emitLocalTrade } from '../lib/tradeEvents'
+import { subscribePrices } from '../lib/dflowWs'
 
 const OrdersContext = createContext(null)
 
+// Dev-only simulated-fills paths in this file:
+//   1. `fetchLivePrice`  — when DFlow + REST + orderbook all fail, drift
+//      the last known currentPrice so triggers can still fire in dev.
+//   2. `executeOrder`    — when `submitToDflow` fails, treat the order
+//      as filled-at-cached-price so the dev demo flow continues.
+// Both are gated on ALLOW_SIMULATED_FILLS and disabled in prod by env
+// default. They serve DIFFERENT real failures; do not consolidate into a
+// single guard — that would couple price fetch to broadcast.
 const STORAGE_KEY = 'predictflow_conditional_orders'
-const POLL_INTERVAL = 5000
+// Safety fallback: a one-shot REST price probe every SAFETY_POLL_MS in case
+// DFlow's WS goes silent (server-side market pause, our connection in a
+// half-open state the heartbeat hasn't caught yet, etc.). The primary path
+// is the prices-channel WebSocket — see the effect below.
+const SAFETY_POLL_MS = 30000
 
 function loadOrders() {
   const v = safeGet(STORAGE_KEY, [])
@@ -199,86 +209,32 @@ export function OrdersProvider({ children }) {
     setNotifications(prev => prev.filter(n => n.id !== id))
   }, [])
 
-  // Submit a real DFlow /order + sign + send. Returns
-  //   { txSigned: true, signature, error: null } on success,
+  // Submit a real DFlow /order via the shared pipeline.
+  // Returns
+  //   { txSigned: true, signature } on success,
   //   { txSigned: false, retryable: bool, error: string } on failure.
-  // The earlier impl was broken in two ways: it passed raw tx bytes to
-  // signTransaction (wallets need a decoded Transaction object), and it
-  // never broadcast the signed tx to the chain — so even when triggers
-  // fired the order could not actually fill.
+  // The shared pipeline already wraps the validate → decode → whitelist →
+  // preflight → sign+send sequence; we just translate its result to the
+  // shape executeOrder expects.
   const submitToDflow = useCallback(async (order) => {
     if (!address) return { txSigned: false, retryable: true, error: 'Wallet not connected' }
     const outputMint = order.side === 'yes' ? order.yesMint : order.noMint
     if (!outputMint) return { txSigned: false, retryable: false, error: 'Market has no outcome mint' }
-
-    try {
-      const amountLamports = Math.floor(order.amount * 1e6)
-      const idempotencyKey = generateIdempotencyKey('cond')
-      const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${encodeURIComponent(outputMint)}&amount=${amountLamports}&userPublicKey=${address}`
-      const res = await fetchWithRetry(url, {
-        headers: { 'X-Idempotency-Key': idempotencyKey },
-      }, { retries: 1, timeoutMs: 8000 })
-      if (!res.ok) {
-        const body = await res.text().catch(() => '')
-        // 4xx = caller error (wrong mint, bad amount, KYC) — don't keep retrying.
-        const retryable = res.status >= 500
-        return { txSigned: false, retryable, error: `Order API ${res.status}: ${body.slice(0, 200)}` }
-      }
-      const data = await res.json()
-
-      const payloadCheck = validateTxPayload(data.transaction)
-      if (!payloadCheck.ok) return { txSigned: false, retryable: false, error: payloadCheck.error }
-
-      const provider = activeWallet?.getProvider?.()
-      if (!provider) return { txSigned: false, retryable: true, error: 'No wallet provider' }
-      if (!data.transaction) return { txSigned: false, retryable: false, error: 'Order API returned no transaction' }
-
-      // Same security pipeline as submitMarketTrade: decode + program
-      // whitelist before signing, preflight against a Solana RPC.
-      const decoded = decodeDflowTransaction(data.transaction)
-      if (!decoded.ok) return { txSigned: false, retryable: false, error: decoded.error }
-      const whitelist = assertAllowedPrograms(decoded.tx)
-      if (!whitelist.ok) return { txSigned: false, retryable: false, error: whitelist.error }
-
-      const txBytes = typeof data.transaction === 'string'
-        ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
-        : data.transaction
-      const pf = await preflightTransaction(txBytes)
-      if (!pf.ok) {
-        if (pf.unreachable) return { txSigned: false, retryable: true, error: 'RPC unreachable' }
-        return { txSigned: false, retryable: false, error: pf.error?.toString?.() || 'Preflight failed' }
-      }
-
-      let signature = null
-      if (typeof provider.signAndSendTransaction === 'function') {
-        const sent = await provider.signAndSendTransaction(decoded.tx)
-        signature = sent?.signature || sent?.publicKey || 'signed'
-      } else if (typeof provider.signTransaction === 'function') {
-        // Older wallet providers without combined sign+send. The decoded
-        // Transaction must be passed (NOT raw bytes — that's what was broken
-        // before). We still need to broadcast the signed result, but most
-        // app wallets in this codebase implement signAndSendTransaction so
-        // this branch is rarely hit.
-        const signedTx = await provider.signTransaction(decoded.tx)
-        const sig = signedTx?.signatures?.[0]
-        const sigBytes = sig?.signature || (sig instanceof Uint8Array ? sig : null)
-        signature = sigBytes
-          ? Array.from(sigBytes).map(b => b.toString(16).padStart(2, '0')).join('')
-          : 'signed'
-      } else {
-        return { txSigned: false, retryable: false, error: 'Wallet does not support signing' }
-      }
-
-      return { txSigned: true, signature, error: null }
-    } catch (err) {
-      return {
-        txSigned: false,
-        // User-rejected sign or transient network errors should be retryable;
-        // on-chain rejections (custom program errors) typically aren't.
-        retryable: true,
-        error: safeErrorMessage(err, 'Order submission failed'),
-      }
+    const provider = activeWallet?.getProvider?.()
+    const result = await runOrderPipeline({
+      inputMint: USDC_MINT,
+      outputMint,
+      amountLamports: Math.floor(order.amount * 1e6),
+      userPublicKey: address,
+      idempotencyPrefix: 'cond',
+      provider,
+      preflight: true,
+      broadcast: 'send',
+    })
+    if (result.ok) {
+      return { txSigned: true, signature: result.signature, error: null }
     }
+    return { txSigned: false, retryable: result.retryable, error: result.error }
   }, [activeWallet, address])
 
   const executeOrder = useCallback(async (order, livePrice) => {
@@ -356,43 +312,138 @@ export function OrdersProvider({ children }) {
     addNotification(`${typeLabel} triggered${suffix}! ${order.side.toUpperCase()} ${shares.toFixed(2)} shares @ ${(fillPrice * 100).toFixed(1)}¢`)
   }, [addNotification, submitToDflow])
 
-  // Keep a ref to orders so the interval's effect doesn't tear down
-  // every time an order is added/updated. This eliminates the race
-  // where a fill in flight could be missed.
+  // Keep refs so the WS subscription effect doesn't tear down every time an
+  // order is added/updated. Re-subscribing on every state change would miss
+  // fast-firing triggers and churn DFlow with subscribe/unsubscribe spam.
   const ordersRef = useRef(orders)
   useEffect(() => { ordersRef.current = orders }, [orders])
+  const executeOrderRef = useRef(executeOrder)
+  useEffect(() => { executeOrderRef.current = executeOrder }, [executeOrder])
+  // Tracks orders currently mid-execute so a double-tick on the WS
+  // (especially during reconnect replays) doesn't fire the same order twice.
+  const inFlightExecuteRef = useRef(new Set())
 
-  // Only run the polling loop when there's something to monitor.
-  const hasPending = orders.some(o => o.status === 'pending')
+  // Stable signature of "the set of tickers we need a price feed for".
+  // Effect re-runs when this string changes — i.e., when a new market gets a
+  // pending order or the last order on a market clears — so subscriptions
+  // stay in sync with what we actually care about.
+  const pendingTickersKey = useMemo(() => {
+    const set = new Set()
+    for (const o of orders) {
+      if (o.status !== 'pending') continue
+      const t = o.marketTicker || o.marketId
+      if (t) set.add(t)
+    }
+    return [...set].sort().join(',')
+  }, [orders])
 
   useEffect(() => {
-    if (!hasPending) return
-    const interval = setInterval(async () => {
-      const pending = ordersRef.current.filter(o => o.status === 'pending')
-      if (pending.length === 0) return
+    if (!pendingTickersKey) return
+    const tickers = pendingTickersKey.split(',')
 
-      const byMarket = {}
-      for (const o of pending) {
-        if (!byMarket[o.marketId]) byMarket[o.marketId] = []
-        byMarket[o.marketId].push(o)
+    // Pick the right side of the book for an order:
+    //   limit (BUY)  → ASK of that side (price you'd pay to buy)
+    //   stop-loss / take-profit (SELL) → BID of that side (price you'd
+    //                                    receive on sale)
+    // Mirrors worker/src/lib/triggers.ts#priceForOrder. Reading ASK for a
+    // sell trigger fires 5–20 bps off in a wide-spread market.
+    const priceForOrder = (cache, side, orderType) => {
+      if (!cache) return null
+      if (orderType === 'limit') {
+        return side === 'yes' ? cache.yesAsk : cache.noAsk
       }
+      return side === 'yes' ? cache.yesBid : cache.noBid
+    }
 
-      for (const [marketId, marketOrders] of Object.entries(byMarket)) {
-        const livePrice = await fetchLivePrice(marketOrders[0])
-        if (!livePrice) continue
-        priceCache.current[marketId] = livePrice
-
-        for (const order of marketOrders) {
-          const currentSidePrice = order.side === 'yes' ? livePrice.yes : livePrice.no
-          if (shouldTriggerOrder(order, currentSidePrice)) {
-            executeOrder(order, livePrice)
-          }
+    const inFlightRef = inFlightExecuteRef.current
+    const evalForTicker = (ticker) => {
+      const cached = priceCache.current[ticker]
+      if (!cached) return
+      const matching = ordersRef.current.filter(o =>
+        o.status === 'pending' && (o.marketTicker || o.marketId) === ticker,
+      )
+      for (const order of matching) {
+        // Frontend execution race guard — the WS can deliver two ticks in
+        // quick succession (especially during reconnect replay), and
+        // executeOrder is async. Without this gate we'd sign and broadcast
+        // the same trade twice. The backend has a CAS guard too; this is
+        // belt + suspenders for the legacy localStorage path.
+        if (inFlightRef.has(order.id)) continue
+        const sidePrice = priceForOrder(cached, order.side, order.orderType)
+        if (sidePrice == null) continue
+        if (shouldTriggerOrder(order, sidePrice)) {
+          inFlightRef.add(order.id)
+          Promise.resolve(executeOrderRef.current(order, {
+            yes: cached.yesAsk ?? cached.yesBid,
+            no: cached.noAsk ?? cached.noBid,
+            source: cached.source,
+          })).finally(() => inFlightRef.delete(order.id))
         }
       }
-    }, POLL_INTERVAL)
+    }
 
-    return () => clearInterval(interval)
-  }, [hasPending, executeOrder])
+    // Primary path — DFlow `prices` WS channel. Sub-second trigger latency.
+    const unsubs = []
+    for (const ticker of tickers) {
+      const off = subscribePrices(ticker, (msg) => {
+        const yesAsk = parseFloat(msg.yes_ask)
+        const yesBid = parseFloat(msg.yes_bid)
+        const noAsk = parseFloat(msg.no_ask)
+        const noBid = parseFloat(msg.no_bid)
+        const yesAskOk = Number.isFinite(yesAsk)
+        const yesBidOk = Number.isFinite(yesBid)
+        const noAskOk = Number.isFinite(noAsk)
+        const noBidOk = Number.isFinite(noBid)
+        if (!yesAskOk && !yesBidOk && !noAskOk && !noBidOk) return
+        // Cache the full bid/ask quad so limit orders evaluate against
+        // asks while stop-loss / take-profit evaluate against bids. Fill
+        // missing sides from the inverse (yesAsk = 1 − noBid, etc.) so a
+        // one-sided book still produces usable triggers.
+        priceCache.current[ticker] = {
+          yesAsk: yesAskOk ? yesAsk : (noBidOk ? 1 - noBid : null),
+          yesBid: yesBidOk ? yesBid : (noAskOk ? 1 - noAsk : null),
+          noAsk: noAskOk ? noAsk : (yesBidOk ? 1 - yesBid : null),
+          noBid: noBidOk ? noBid : (yesAskOk ? 1 - yesAsk : null),
+          source: 'ws',
+        }
+        evalForTicker(ticker)
+      })
+      unsubs.push(off)
+    }
+
+    // Safety fallback — REST probe every 30s. WS heartbeat in dflowWs.js
+    // catches dead connections, but a server-side market pause can leave
+    // the connection healthy with no messages for a given ticker. The REST
+    // probe makes sure we don't sit forever waiting for a tick that
+    // doesn't come.
+    const safetyTimer = setInterval(async () => {
+      for (const ticker of tickers) {
+        const matching = ordersRef.current.filter(o =>
+          o.status === 'pending' && (o.marketTicker || o.marketId) === ticker,
+        )
+        if (matching.length === 0) continue
+        const livePrice = await fetchLivePrice(matching[0])
+        if (livePrice) {
+          // fetchLivePrice returns the legacy {yes, no} ASK pair. Promote to
+          // the bid/ask quad shape — for sells we treat ASK as the best
+          // available BID approximation in the absence of book depth.
+          priceCache.current[ticker] = {
+            yesAsk: livePrice.yes,
+            yesBid: livePrice.yes,
+            noAsk: livePrice.no,
+            noBid: livePrice.no,
+            source: livePrice.source || 'rest',
+          }
+          evalForTicker(ticker)
+        }
+      }
+    }, SAFETY_POLL_MS)
+
+    return () => {
+      for (const off of unsubs) off()
+      clearInterval(safetyTimer)
+    }
+  }, [pendingTickersKey])
 
   const pendingOrders = useMemo(
     () => orders.filter(o => o.status === 'pending'),

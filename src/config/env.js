@@ -35,7 +35,11 @@ export const MODE = env.MODE || 'development'
 export const DFLOW_PROXY_BASE = str('VITE_DFLOW_PROXY_BASE', '/api/dflow')
 export const DFLOW_QUOTE_URL = str('VITE_DFLOW_QUOTE_URL', '/api/dflow-quote')
 export const DFLOW_ORDER_URL = str('VITE_DFLOW_ORDER_URL', '/api/dflow-order')
-export const DFLOW_WS_URL = str('VITE_DFLOW_WS_URL', 'wss://api.prod.dflow.net/ws')
+// DFlow real-time channels. The dev endpoint is auth-free (rate-limited but
+// fine for personal-use volume); the prod endpoint requires `x-api-key` on
+// the HTTP upgrade, which browsers cannot set — a CF Pages Function proxy
+// would be needed to use it from this bundle. Default to dev for now.
+export const DFLOW_WS_URL = str('VITE_DFLOW_WS_URL', 'wss://dev-prediction-markets-api.dflow.net/api/v1/ws')
 export const DFLOW_DOCS_URL = str('VITE_DFLOW_DOCS_URL', 'https://docs.dflow.net')
 export const DFLOW_ALLOWED_PROGRAMS = list('VITE_DFLOW_ALLOWED_PROGRAMS', [])
 
@@ -67,6 +71,16 @@ export const ALLOW_SIMULATED_FILLS = bool('VITE_ALLOW_SIMULATED_FILLS', IS_DEV)
 
 // Live-feed endpoint (if DFlow publishes one). Falls back to stub polling.
 export const LIVE_PRICE_URL = str('VITE_LIVE_PRICE_URL', '')
+
+// Keeper Worker base URL — the production limit-order backend. When unset
+// the frontend falls back to the legacy localStorage trigger loop so the
+// app remains usable in dev environments without a deployed keeper.
+export const KEEPER_API_BASE = str('VITE_KEEPER_API_BASE', '')
+
+// Solana RPC URL the frontend uses for read-only nonce-account ops + the
+// occasional balance check. Defaults to the first endpoint in
+// SOLANA_RPC_ENDPOINTS so we don't need a separate env var in dev.
+export const SOLANA_RPC_URL = str('VITE_SOLANA_RPC_URL', '')
 
 // Legal / contact
 export const TERMS_URL = str('VITE_TERMS_URL', '')

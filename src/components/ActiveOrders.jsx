@@ -1,6 +1,7 @@
-import React from 'react'
-import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp } from 'lucide-react'
+import React, { useMemo } from 'react'
+import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud } from 'lucide-react'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { useKeeperOrders } from '../hooks/useKeeperOrders'
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -14,21 +15,60 @@ const TYPE_CONFIG = {
 
 const STATUS_CONFIG = {
   pending: { label: 'Pending', icon: Clock, color: 'text-terminal-yellow' },
+  armed: { label: 'Armed', icon: Loader2, color: 'text-terminal-accent', spin: true },
+  submitting: { label: 'Submitting', icon: Loader2, color: 'text-terminal-accent', spin: true },
   executing: { label: 'Executing', icon: Loader2, color: 'text-terminal-accent', spin: true },
   filled: { label: 'Filled', icon: Check, color: 'text-terminal-green' },
   failed: { label: 'Failed', icon: AlertTriangle, color: 'text-terminal-red' },
+  expired: { label: 'Expired', icon: AlertTriangle, color: 'text-terminal-muted' },
   cancelled: { label: 'Cancelled', icon: X, color: 'text-terminal-muted' },
 }
 
-export default function ActiveOrders({ marketId }) {
-  const { orders, cancelOrder, cancelAll, clearCompleted } = useConditionalOrders()
+export default function ActiveOrders({ marketId, marketTicker }) {
+  const { orders: localOrders, cancelOrder: cancelLocal, cancelAll: cancelAllLocal, clearCompleted } = useConditionalOrders()
+  const { orders: keeperOrders, cancelOrder: cancelKeeper } = useKeeperOrders()
 
-  const relevantOrders = marketId
-    ? orders.filter(o => o.marketId === marketId)
-    : orders
+  // Tag orders with their backing source so cancelOrder routes to the right
+  // store and the row can show a "cloud" badge for keeper-backed orders.
+  const allOrders = useMemo(() => {
+    const local = localOrders.map(o => ({ ...o, source: o.source || 'local' }))
+    return [...keeperOrders, ...local]
+  }, [localOrders, keeperOrders])
 
-  const pendingCount = relevantOrders.filter(o => o.status === 'pending').length
-  const completedCount = relevantOrders.filter(o => o.status !== 'pending' && o.status !== 'executing').length
+  // Filter to this market — both id and ticker are matched because keeper
+  // and local orders identify markets differently.
+  const relevantOrders = (marketId || marketTicker)
+    ? allOrders.filter(o => (
+        (marketId && o.marketId === marketId) ||
+        (marketTicker && o.marketTicker === marketTicker)
+      ))
+    : allOrders
+
+  const pendingCount = relevantOrders.filter(o =>
+    o.status === 'pending' || o.status === 'armed' || o.status === 'submitting'
+  ).length
+  const completedCount = relevantOrders.filter(o =>
+    !['pending', 'armed', 'submitting', 'executing'].includes(o.status)
+  ).length
+
+  const cancelOrder = (id) => {
+    const order = allOrders.find(o => o.id === id)
+    if (!order) return
+    if (order.source === 'keeper') return cancelKeeper(id)
+    return cancelLocal(id)
+  }
+
+  // "Cancel All" must dispatch to BOTH backends — the legacy localStorage
+  // path (cancelAllLocal) and the keeper API (per-order cancel since the
+  // API doesn't expose a bulk endpoint). Without this, keeper orders keep
+  // firing after the user clicks Cancel All.
+  const cancelAll = async () => {
+    const cancellable = relevantOrders.filter(o => o.status === 'pending')
+    cancelAllLocal()
+    await Promise.allSettled(
+      cancellable.filter(o => o.source === 'keeper').map(o => cancelKeeper(o.id)),
+    )
+  }
 
   if (relevantOrders.length === 0) return null
 
@@ -83,13 +123,22 @@ export default function ActiveOrders({ marketId }) {
                     <TypeIcon size={10} />
                     {typeConf.label}
                   </span>
+                  {order.source === 'keeper' && (
+                    <span
+                      className="flex items-center gap-1 text-[10px] font-mono text-terminal-accent"
+                      title="Stored on the keeper — fires even when this tab is closed"
+                    >
+                      <Cloud size={10} />
+                      keeper
+                    </span>
+                  )}
                   <span className={`text-[10px] font-bold uppercase ${
                     order.side === 'yes' ? 'text-terminal-green' : 'text-terminal-red'
                   }`}>
                     {order.side}
                   </span>
                   <span className="text-xs text-terminal-text font-mono truncate">
-                    {order.question?.slice(0, 40)}{order.question?.length > 40 ? '...' : ''}
+                    {order.question?.slice(0, 40) || order.marketTicker || order.marketId}{order.question?.length > 40 ? '...' : ''}
                   </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

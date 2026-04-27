@@ -6,26 +6,22 @@ import { useKyc } from './useKyc'
 import { useUserTier } from './useUserTier'
 import { useReferral } from './useReferral'
 import {
-  DFLOW_QUOTE_URL, DFLOW_ORDER_URL, USDC_MINT,
+  DFLOW_QUOTE_URL, USDC_MINT,
   ALLOW_SYNTHESIZED_MINTS, ALLOW_SIMULATED_FILLS,
 } from '../config/env'
 import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
-import { preflightTransaction } from '../lib/solanaPreflight'
-import { decodeDflowTransaction, assertAllowedPrograms, validateTxPayload } from '../lib/txDecoder'
 import { reportError } from '../lib/errorReporter'
 import { track } from '../lib/analytics'
 import { safeErrorMessage } from '../lib/errorMessage'
-import { classifyOrderResponse, isGateRejection } from '../lib/dflowErrors'
-import { formatSimulationError } from '../lib/simulationErrors'
-import { appendPosition } from '../lib/storage'
-import { emitLocalTrade } from '../lib/tradeEvents'
+import { isGateRejection } from '../lib/dflowErrors'
+import { runOrderPipeline } from '../lib/orderTxPipeline'
+import { isKeeperConfigured } from '../lib/keeperApi'
+import { useKeeperLimitOrder } from './useKeeperLimitOrder'
 import { calculateFee } from '../services/feeService'
-import { recordReferralEarning } from '../services/referralService'
-import { FEE_CONFIG, isFeeWalletConfigured } from '../config/fees'
-import { buildFeeTransferTransaction } from '../lib/feeTransfer'
-import { logFeeEvent } from '../lib/feeLog'
-import { maskWallet } from '../lib/privacy'
-import { emitReferralUpdate } from './useReferral'
+import {
+  sweepFee, isSweepInCooldown, recordSweepFailure, recordSweepSuccess,
+} from '../lib/feeSweep'
+import { recordTradeOutcome } from '../lib/recordTradeOutcome'
 
 function getRealMint(market, side) {
   if (side === 'yes' && market.yesMint) return market.yesMint
@@ -46,87 +42,13 @@ function getTokenMint(market, side) {
 // reopening the trade panel while a submit is still pending cannot double-spend.
 const submissionLocks = new Set()
 
-// Cooldown for the fee-sweep tx. If sweep keeps failing (wrong fee wallet,
-// RPC down, user repeatedly rejecting the second prompt) we'd otherwise pop
-// a wallet popup on every market trade. After SWEEP_FAILURE_THRESHOLD
-// consecutive failures we cool down for SWEEP_COOLDOWN_MS; success resets.
-const SWEEP_FAILURE_THRESHOLD = 3
-const SWEEP_COOLDOWN_MS = 5 * 60 * 1000
-const sweepState = { consecutiveFailures: 0, cooldownUntil: 0 }
-
-function isSweepInCooldown(now = Date.now()) {
-  return sweepState.cooldownUntil > now
-}
-
-function recordSweepFailure(now = Date.now()) {
-  sweepState.consecutiveFailures++
-  if (sweepState.consecutiveFailures >= SWEEP_FAILURE_THRESHOLD) {
-    sweepState.cooldownUntil = now + SWEEP_COOLDOWN_MS
-  }
-}
-
-function recordSweepSuccess() {
-  sweepState.consecutiveFailures = 0
-  sweepState.cooldownUntil = 0
-}
-
-// Pull the platform (and optional referrer) fee out of the user's USDC ATA
-// after the swap settled. Skipped when the fee wallet is the placeholder
-// (no real recipient configured) — caller still records the event in the
-// fee log so the revenue dashboard can show "would-be" fee accrual.
-async function sweepFee({ address, activeWallet, feeCalc, referrer }) {
-  if (!isFeeWalletConfigured()) {
-    throw new Error('Fee wallet not configured — set VITE_FEE_WALLET to enable on-chain fee collection')
-  }
-  const provider = activeWallet?.getProvider?.()
-  if (!provider) throw new Error('Wallet provider unavailable for fee transfer')
-
-  // Math.floor a tiny fee (e.g. $0.0001 platform share with a referrer split)
-  // can produce 0 lamports. A 0-amount transfer is a no-op, but its companion
-  // ATA-create instruction is not — pruning here keeps the tx tight and avoids
-  // surfacing nonsense entries in the admin dashboard.
-  const platformLamports = Math.floor(feeCalc.platformAmount * 1e6)
-  const referralLamports = Math.floor(feeCalc.referralAmount * 1e6)
-
-  const transfers = []
-  if (platformLamports > 0) {
-    transfers.push({
-      toPubkey: FEE_CONFIG.FEE_WALLET,
-      amountLamports: platformLamports,
-      label: 'platform',
-    })
-  }
-  if (referralLamports > 0 && referrer) {
-    transfers.push({
-      toPubkey: referrer,
-      amountLamports: referralLamports,
-      label: 'referrer',
-    })
-  }
-  if (transfers.length === 0) return null
-
-  const built = await buildFeeTransferTransaction({
-    fromPubkey: address,
-    mint: USDC_MINT,
-    transfers,
-  })
-  if (!built) return null
-
-  if (typeof provider.signAndSendTransaction === 'function') {
-    return await provider.signAndSendTransaction(built.tx)
-  }
-  if (typeof provider.signTransaction === 'function') {
-    return await provider.signTransaction(built.tx)
-  }
-  throw new Error('Wallet does not support signing')
-}
-
 // Encapsulates every trade-submission path (market / conditional / DCA) plus
 // quote preview. Returns the UX state the panel wants to render and the set of
 // handlers the panel wires to buttons.
 export function useTradeSubmit(market) {
   const { connected, connect, address, activeWallet } = useWallet()
   const { addOrder } = useConditionalOrders()
+  const { placeLimit: placeKeeperLimit } = useKeeperLimitOrder()
   const { startStrategy } = useDCA()
   const { requireKyc, verifyWithServer, showModalWithReason } = useKyc()
   const { tier } = useUserTier()
@@ -240,71 +162,27 @@ export function useTradeSubmit(market) {
       let txSigned = false
       let txSignature = null
 
-      try {
-        const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${outputMint}&amount=${netLamports}&userPublicKey=${address}`
-        const res = await fetchWithRetry(url, {
-          headers: { 'X-Idempotency-Key': idempotencyKey },
-        }, { retries: 1, timeoutMs: 8000 })
-        if (!res.ok) {
-          const classification = await classifyOrderResponse(res)
-          const err = new Error(classification.message)
-          err.status = classification.status
-          err.kind = classification.kind
-          throw err
-        }
-        const data = await res.json()
-
-        const payloadCheck = validateTxPayload(data.transaction)
-        if (!payloadCheck.ok) throw new Error(payloadCheck.error)
-
-        const provider = activeWallet?.getProvider?.()
-        if (!provider) throw new Error('No wallet provider — please reconnect')
-        if (!data.transaction) throw new Error('Order API returned no transaction')
-
-        // Decode + whitelist BEFORE signing — a compromised DFlow server can
-        // otherwise swap in a drain-wallet instruction.
-        const decoded = decodeDflowTransaction(data.transaction)
-        if (!decoded.ok) throw new Error(decoded.error)
-        const whitelist = assertAllowedPrograms(decoded.tx)
-        if (!whitelist.ok) throw new Error(whitelist.error)
-
-        const txBytes = typeof data.transaction === 'string'
-          ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
-          : data.transaction
-
-        const pf = await preflightTransaction(txBytes)
-        if (!pf.ok) {
-          if (pf.unreachable) {
-            throw new Error('Could not verify order with Solana RPC. Please try again.')
-          }
-          const formatted = formatSimulationError({
-            error: pf.error,
-            logs: pf.logs,
-            summary: whitelist.summary,
-          })
-          const err = new Error(formatted.message)
-          err.simDetails = formatted.details
-          err.simLogs = formatted.logs
-          err.simRaw = pf.error
-          throw err
-        }
-
-        if (typeof provider.signAndSendTransaction === 'function') {
-          const sent = await provider.signAndSendTransaction(decoded.tx)
-          txSignature = sent?.signature || sent?.publicKey || null
-          txSigned = !!txSignature
-        } else if (typeof provider.signTransaction === 'function') {
-          const signedTx = await provider.signTransaction(decoded.tx)
-          const sig = signedTx?.signatures?.[0]
-          const sigBytes = sig?.signature || (sig instanceof Uint8Array ? sig : null)
-          txSignature = sigBytes
-            ? Array.from(sigBytes).map(b => b.toString(16).padStart(2, '0')).join('')
-            : 'signed'
-          txSigned = true
-        } else {
-          throw new Error('Wallet does not support signing')
-        }
-      } catch (err) {
+      const provider = activeWallet?.getProvider?.()
+      const result = await runOrderPipeline({
+        inputMint: USDC_MINT,
+        outputMint,
+        amountLamports: netLamports,
+        userPublicKey: address,
+        idempotencyPrefix: 'mkt',
+        provider,
+        preflight: true,
+        broadcast: 'send',
+      })
+      if (result.ok) {
+        txSigned = true
+        txSignature = result.signature
+      } else {
+        const err = new Error(result.error)
+        if (result.kind) err.kind = result.kind        // KYC / compliance routing
+        if (result.status) err.status = result.status
+        if (result.simDetails) err.simDetails = result.simDetails
+        if (result.simLogs) err.simLogs = result.simLogs
+        if (result.simRaw) err.simRaw = result.simRaw
         fail(err)
       }
 
@@ -344,67 +222,11 @@ export function useTradeSubmit(market) {
         }
       }
 
-      logFeeEvent({
-        marketId: market.id,
-        side,
-        inputAmount: feeCalc.inputAmount,
-        netAmount: feeCalc.netAmount,
-        feeAmount: feeCalc.feeAmount,
-        feeBps: feeCalc.feeBps,
-        platformAmount: feeCalc.platformAmount,
-        referralAmount: feeCalc.referralAmount,
-        referrer: referrer ? maskWallet(referrer) : null,
-        tier,
-        feeStatus,
-        txSigned,
-      })
-      if (feeCalc.referralAmount > 0 && referrer && feeStatus === 'sent') {
-        recordReferralEarning(referrer, feeCalc.referralAmount)
-        emitReferralUpdate()
-      }
-
-      const order = {
-        id: idempotencyKey,
-        marketId: market.id,
-        side,
-        type: 'market',
-        amount: parseFloat(amount),
-        netAmount: feeCalc.netAmount,
-        feeAmount: feeCalc.feeAmount,
-        price,
-        shares: parseFloat(shares),
-        timestamp: new Date().toISOString(),
-        status: 'filled',
-        txSigned,
-        txSignature: txSignature || (txSigned ? 'signed' : 'simulated'),
-        feeStatus,
-        feeError,
-      }
-      appendPosition({
-        ...order,
-        question: market.question,
-        eventTitle: market.eventTitle,
-        category: market.category,
-        closeTime: market.closeTime || null,
-      })
-      track('trade_filled', {
-        marketId: market.id, side, amount: parseFloat(amount),
-        simulated: !txSigned, feeStatus, feeAmount: feeCalc.feeAmount,
-      })
-      // Optimistically broadcast to RecentTrades — DFlow's /trades feed lags
-      // by several seconds and the user expects to see their own fill on the
-      // tape immediately. RecentTrades dedupes by txSignature once the
-      // indexed version arrives.
-      emitLocalTrade({
-        id: `local-${txSignature || idempotencyKey}`,
-        marketId: market.id,
-        ticker: market.ticker || market.id,
-        time: order.timestamp,
-        side: side === 'no' ? 'sell' : 'buy',
-        price,
-        shares: parseFloat(shares),
-        amount: parseFloat(amount),
-        txSignature,
+      const order = recordTradeOutcome({
+        market, side, amount, shares, price,
+        txSigned, txSignature, idempotencyKey,
+        feeCalc, feeStatus, feeError,
+        tier, referrer,
       })
       setResult({ success: true, order, feeCalc, feeStatus, feeError })
       setQuote(null)
@@ -431,7 +253,7 @@ export function useTradeSubmit(market) {
     }
   }, [connected, connect, requireKyc, verifyWithServer, showModalWithReason, market, address, activeWallet, tier, referrer])
 
-  const submitConditionalOrder = useCallback(({ orderType, side, amount, triggerPrice }) => {
+  const submitConditionalOrder = useCallback(async ({ orderType, side, amount, triggerPrice }) => {
     if (!connected) { connect(); return }
     if (!requireKyc()) return
     if (!amount || parseFloat(amount) <= 0) {
@@ -460,6 +282,37 @@ export function useTradeSubmit(market) {
       return
     }
 
+    // Route all conditional order types through the keeper Worker when
+    // configured. Limit orders are buys (USDC → outcome); stop-loss and
+    // take-profit are sells (outcome → USDC). Direction selection lives
+    // in useKeeperLimitOrder; this hook just dispatches.
+    if (
+      (orderType === 'limit' || orderType === 'stop-loss' || orderType === 'take-profit') &&
+      isKeeperConfigured()
+    ) {
+      setSubmitting(true)
+      try {
+        const result = await placeKeeperLimit({
+          market,
+          side,
+          orderType,
+          triggerPrice: tp,
+          amountUsdc: parseFloat(amount),
+        })
+        track('conditional_order_placed', {
+          marketId: market.id, orderType, side, amount: parseFloat(amount),
+          triggerPrice: tp, backend: 'keeper',
+        })
+        setResult({ success: true, conditional: true, order: { ...result, orderType, triggerPrice: tp, amount: parseFloat(amount) } })
+      } catch (err) {
+        reportError(err, { context: 'submitConditionalOrder/keeper', marketId: market.id })
+        setResult({ success: false, error: safeErrorMessage(err, 'Keeper placement failed') })
+      } finally {
+        setSubmitting(false)
+      }
+      return
+    }
+
     const newOrder = addOrder({
       orderType,
       marketId: market.id,
@@ -480,7 +333,7 @@ export function useTradeSubmit(market) {
       marketId: market.id, orderType, side, amount: parseFloat(amount), triggerPrice: tp,
     })
     setResult({ success: true, conditional: true, order: newOrder })
-  }, [connected, connect, requireKyc, market, addOrder])
+  }, [connected, connect, requireKyc, market, addOrder, placeKeeperLimit])
 
   const submitDca = useCallback(({ side, amountPerBuy, frequency, totalBudget }) => {
     if (!connected) { connect(); return }
