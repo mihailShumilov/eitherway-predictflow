@@ -143,6 +143,28 @@ describe('normalizeMarket', () => {
     expect(m.wonSide).toBe('yes')
   })
 
+  it('marks as settled when closeTime is past and prices have collapsed, even if status is still active', () => {
+    // DFlow's metadata `status` field lags real settlement — a market can
+    // be past its closeTime with one side at ~$0.01 while still flagged
+    // active. Detect this from prices instead of waiting for status to flip.
+    const past = new Date(Date.now() - 3600 * 1000).toISOString()
+    const m = normalizeMarket(
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.01, noAsk: 0.99, status: 'active', closeTime: past } },
+      'Y'
+    )
+    expect(m.settled).toBe(true)
+    expect(m.wonSide).toBe('no')
+  })
+
+  it('does not mark active mid-priced markets as settled', () => {
+    const future = new Date(Date.now() + 24 * 3600 * 1000).toISOString()
+    const m = normalizeMarket(
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.4, noAsk: 0.6, status: 'active', closeTime: future } },
+      'Y'
+    )
+    expect(m.settled).toBe(false)
+  })
+
   it('returns null wonSide for voided markets', () => {
     const m = normalizeMarket(
       { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.5, noAsk: 0.5, status: 'finalized', result: 'void' } },

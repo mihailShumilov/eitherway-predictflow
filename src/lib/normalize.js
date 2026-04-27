@@ -189,6 +189,21 @@ function inferWonSide(m, yesAsk, noAsk) {
   return null
 }
 
+// True when a market's prices indicate the outcome is decided, even if the
+// status field hasn't flipped yet. DFlow's metadata `status` lags real
+// settlement by minutes-to-hours: a market can be past closeTime with one
+// side at ~$0.99 and the other at ~$0.01 while still labelled `active` or
+// `inactive`. This price-based fallback catches that gap.
+function looksResolvedByPrices(yesAsk, noAsk) {
+  const yes = Number.isFinite(yesAsk) ? yesAsk : null
+  const no = Number.isFinite(noAsk) ? noAsk : null
+  // Either side at a fixed point is enough — the other side is implied
+  // by no-arbitrage (yes + no ≈ 1).
+  if (yes != null && (yes >= 0.95 || yes <= 0.05)) return true
+  if (no != null && (no >= 0.95 || no <= 0.05)) return true
+  return false
+}
+
 // market/by-mint response normalizer.
 // Callers pass `mint` so we can infer which outcome (yes/no) the user holds.
 export function normalizeMarket(payload, mint) {
@@ -207,7 +222,16 @@ export function normalizeMarket(payload, mint) {
   const currentPrice = side === 'no' ? noAsk : yesAsk
 
   const status = (m.status || '').toString().toLowerCase()
+  const closeIso = toCloseTimeIso(m.closeTime ?? m.close_time ?? event.closeTime ?? event.close_time)
+  const closeMs = closeIso ? new Date(closeIso).getTime() : NaN
+  const closePast = Number.isFinite(closeMs) && closeMs <= Date.now()
+  // Settlement is detected from any of three signals, in priority order:
+  //   1. Canonical DFlow status (most reliable when present)
+  //   2. Status absent/active but prices have collapsed past closeTime
+  //      (handles the lag between real settlement and DFlow's status flip)
+  //   3. Active book mid-prices on a still-open market → not settled
   const settled = SETTLED_STATUSES.has(status)
+    || (closePast && looksResolvedByPrices(yesAsk, noAsk))
   const wonSide = settled ? inferWonSide(m, yesAsk, noAsk) : null
 
   return {
@@ -216,7 +240,7 @@ export function normalizeMarket(payload, mint) {
     question: m.question || m.title || m.name || 'Market',
     eventTitle: event.title || event.name || m.eventTitle || '',
     category: m.category || event.category || 'Other',
-    closeTime: toCloseTimeIso(m.closeTime ?? m.close_time ?? event.closeTime ?? event.close_time),
+    closeTime: closeIso,
     side: side || 'yes',
     currentPrice: Number.isFinite(currentPrice) ? currentPrice : 0.5,
     status: status || null,
