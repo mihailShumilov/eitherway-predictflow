@@ -104,7 +104,15 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
   }
 
   await incr(env, 'submit_attempted', { marketTicker: row.market_ticker })
-  console.log('submit_order_attempt', { id: orderId, marketTicker: row.market_ticker, txBytes: signedBytes.length })
+  // One-time diagnostic dump of the signed tx as base64 so we can decode it
+  // locally and verify the wallet didn't reorder the durable-nonce
+  // advanceNonceAccount instruction off position 0. Remove once verified.
+  console.log('submit_order_attempt', {
+    id: orderId,
+    marketTicker: row.market_ticker,
+    txBytes: signedBytes.length,
+    txBase64: bytesToBase64(signedBytes),
+  })
   const sigResult = await sendRawTransaction(env, signedBytes)
   if (!sigResult.ok) {
     console.error('submit_order_send_failed', { id: orderId, permanent: sigResult.permanent, error: sigResult.error })
