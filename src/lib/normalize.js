@@ -157,6 +157,38 @@ export function canBuySide(market, side) {
     || market.yesBid != null && market.yesBid !== ''
 }
 
+// Settlement statuses that mean trading is over and the outcome is (or will
+// soon be) decided. `determined` and `finalized` are the canonical resolved
+// states from the DFlow lifecycle; `closed`/`settled`/`resolved` are seen on
+// older payloads or alternate phrasings.
+const SETTLED_STATUSES = new Set(['determined', 'finalized', 'closed', 'settled', 'resolved'])
+
+// Infer which side won a settled market.
+// Preference order: explicit field on the market payload, then book-price
+// inference (a finalized outcome token's ask snaps to ~1.0 for the winner
+// and ~0.0 for the loser). Returns 'yes' | 'no' | null (null means
+// resolved-but-undetermined: voided market, or prices not yet snapped).
+function inferWonSide(m, yesAsk, noAsk) {
+  const explicit = (m.result ?? m.outcome ?? m.determinedOutcome ?? m.winningOutcome ?? m.winner ?? '')
+    .toString().toLowerCase()
+  if (explicit === 'yes') return 'yes'
+  if (explicit === 'no') return 'no'
+  // Voided / refunded markets — treat as no winner so we don't mislabel.
+  if (explicit === 'void' || explicit === 'voided' || explicit === 'cancelled' || explicit === 'canceled') {
+    return null
+  }
+  const yes = Number.isFinite(yesAsk) ? yesAsk : null
+  const no = Number.isFinite(noAsk) ? noAsk : null
+  // Need at least one side to be near a fixed point. Use 0.1 / 0.9 thresholds:
+  // generous enough to handle dust on the resting book, tight enough that an
+  // active market with mid prices won't get classified.
+  if (yes != null && yes >= 0.9) return 'yes'
+  if (no != null && no >= 0.9) return 'no'
+  if (yes != null && yes <= 0.1 && no != null && no >= 0.5) return 'no'
+  if (no != null && no <= 0.1 && yes != null && yes >= 0.5) return 'yes'
+  return null
+}
+
 // market/by-mint response normalizer.
 // Callers pass `mint` so we can infer which outcome (yes/no) the user holds.
 export function normalizeMarket(payload, mint) {
@@ -174,6 +206,10 @@ export function normalizeMarket(payload, mint) {
   const noAsk = parseFloat(m.noAsk ?? m.no_ask ?? m.noPrice ?? 0.5)
   const currentPrice = side === 'no' ? noAsk : yesAsk
 
+  const status = (m.status || '').toString().toLowerCase()
+  const settled = SETTLED_STATUSES.has(status)
+  const wonSide = settled ? inferWonSide(m, yesAsk, noAsk) : null
+
   return {
     marketId: m.id || m.marketId || m.market_id || null,
     ticker: m.ticker || m.marketTicker || m.market_ticker || null,
@@ -183,6 +219,9 @@ export function normalizeMarket(payload, mint) {
     closeTime: toCloseTimeIso(m.closeTime ?? m.close_time ?? event.closeTime ?? event.close_time),
     side: side || 'yes',
     currentPrice: Number.isFinite(currentPrice) ? currentPrice : 0.5,
+    status: status || null,
+    settled,
+    wonSide,
     yesMint,
     noMint,
   }

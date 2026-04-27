@@ -4,6 +4,7 @@ import { DFLOW_PROXY_BASE, SPL_TOKEN_PROGRAM, SOLANA_RPC_ENDPOINTS } from '../co
 import { fetchWithRetry } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
 import { normalizeMarket } from '../lib/normalize'
+import { buildOnchainEntries } from '../lib/onchainEntries'
 
 const DFLOW_BASE = DFLOW_PROXY_BASE
 const SOLANA_RPCS = SOLANA_RPC_ENDPOINTS
@@ -98,7 +99,21 @@ function buildPositionsFromLocal(localPositions) {
       closeTime: p.closeTime || null,
       value: (p.price || 0) * (p.shares || 0),
       pnl: 0,
+      settled: false,
+      won: null,
+      entrySource: 'local',
     }))
+}
+
+// Compute the realized payout per share for a position. For settled markets
+// where we know who won, redeemable value is $1 if the user's side won and
+// $0 otherwise. For unsettled markets we fall back to the live ask price as
+// a mark-to-market proxy.
+function payoutPerShare(market) {
+  if (market.settled && market.wonSide) {
+    return market.wonSide === market.side ? 1 : 0
+  }
+  return market.currentPrice
 }
 
 export function usePortfolio() {
@@ -120,12 +135,17 @@ export function usePortfolio() {
     const localPositions = readLocalPositions()
 
     try {
-      const [tokenAccounts, outcomeRaw] = await Promise.all([
+      const [tokenAccounts, outcomeRaw, onchainEntries] = await Promise.all([
         getTokenAccounts(address),
         fetchWithRetry(`${DFLOW_BASE}/api/v1/outcome_mints`).then(r => {
           if (!r.ok) throw new Error(`outcome_mints ${r.status}`)
           return r.json()
         }),
+        // Best-effort: on-chain trade history gives us cost basis when local
+        // entries are missing (different browser, cleared storage, etc.).
+        // Returns an empty Map on failure rather than throwing — the
+        // portfolio still renders, just without P&L for unmatched mints.
+        buildOnchainEntries(address, DFLOW_BASE),
       ])
 
       const outcomeIndex = parseOutcomeMints(outcomeRaw)
@@ -154,11 +174,21 @@ export function usePortfolio() {
           const m = normalizeMarket(payload, mint)
           if (!m) throw new Error('unparseable market')
 
-          const entry = findLocalEntry(localPositions, m.marketId, m.side)
-          const entryPrice = entry?.avgPrice ?? m.currentPrice
+          // Entry-price priority: localStorage (most accurate, includes the
+          // exact fill the user made in this session) → on-chain trade
+          // reconstruction (works across sessions/devices) → unknown (null,
+          // surfaced in the UI as "—" rather than a fake $0.00 P&L).
+          const localEntry = findLocalEntry(localPositions, m.marketId, m.side)
+          const onchainEntry = onchainEntries.get(mint)
+          const entry = localEntry || onchainEntry || null
+          const entrySource = localEntry ? 'local' : (onchainEntry ? 'onchain' : 'unknown')
+          const entryPrice = entry?.avgPrice ?? null
           const shares = entry?.shares ?? amount
-          const value = m.currentPrice * shares
-          const pnl = (m.currentPrice - entryPrice) * shares
+
+          const perShare = payoutPerShare(m)
+          const value = perShare * shares
+          const pnl = entryPrice != null ? (perShare - entryPrice) * shares : null
+          const won = m.settled ? (m.wonSide ? m.wonSide === m.side : null) : null
 
           return {
             source: 'wallet',
@@ -170,8 +200,11 @@ export function usePortfolio() {
             side: m.side,
             shares,
             entryPrice,
-            currentPrice: m.currentPrice,
+            entrySource,
+            currentPrice: perShare,
             closeTime: m.closeTime,
+            settled: m.settled,
+            won,
             value,
             pnl,
           }

@@ -21,9 +21,11 @@ bindings = [
 ]
 
 # DO migration: declare the class names so Cloudflare provisions storage.
+# `new_sqlite_classes` is required on the Workers free plan (and is the
+# recommended default for new DOs even on paid plans).
 [[migrations]]
 tag = "v1"
-new_classes = ["PriceWatcher"]
+new_sqlite_classes = ["PriceWatcher"]
 
 # D1 — durable state for orders, sessions, audit log, durable nonces.
 # Fill database_id after running: wrangler d1 create predictflow
@@ -57,6 +59,10 @@ name = "predictflow-keeper-prod"
 bindings = [
   { name = "PRICE_WATCHER", class_name = "PriceWatcher" },
 ]
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PriceWatcher"]
 
 [[env.production.d1_databases]]
 binding = "DB"

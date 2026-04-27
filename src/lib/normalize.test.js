@@ -105,6 +105,52 @@ describe('normalizeMarket', () => {
     expect(m.noMint).toBe('N')
     expect(m.side).toBe('no')
   })
+
+  it('marks active markets as not settled', () => {
+    const m = normalizeMarket(
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.4, noAsk: 0.6, status: 'active' } },
+      'Y'
+    )
+    expect(m.settled).toBe(false)
+    expect(m.wonSide).toBeNull()
+  })
+
+  it('marks finalized markets as settled and infers winner from prices', () => {
+    // YES collapsed to ~$0.99, NO collapsed to ~$0.01 → YES won.
+    const m = normalizeMarket(
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.99, noAsk: 0.01, status: 'finalized' } },
+      'Y'
+    )
+    expect(m.settled).toBe(true)
+    expect(m.wonSide).toBe('yes')
+  })
+
+  it('infers NO winner from collapsed prices on a determined market', () => {
+    const m = normalizeMarket(
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.01, noAsk: 0.99, status: 'determined' } },
+      'N'
+    )
+    expect(m.settled).toBe(true)
+    expect(m.wonSide).toBe('no')
+  })
+
+  it('prefers explicit result field over price inference', () => {
+    const m = normalizeMarket(
+      // Prices haven't snapped yet, but the market explicitly resolved YES.
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.5, noAsk: 0.5, status: 'finalized', result: 'yes' } },
+      'Y'
+    )
+    expect(m.wonSide).toBe('yes')
+  })
+
+  it('returns null wonSide for voided markets', () => {
+    const m = normalizeMarket(
+      { market: { yesMint: 'Y', noMint: 'N', yesAsk: 0.5, noAsk: 0.5, status: 'finalized', result: 'void' } },
+      'Y'
+    )
+    expect(m.settled).toBe(true)
+    expect(m.wonSide).toBeNull()
+  })
 })
 
 describe('extractOutcomeMints', () => {

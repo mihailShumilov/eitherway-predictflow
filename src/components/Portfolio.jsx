@@ -4,7 +4,7 @@ import { formatMarketClose, formatMarketCloseFull } from '../lib/dateFormat'
 import {
   Wallet, TrendingUp, TrendingDown, DollarSign, Briefcase,
   RefreshCw, Loader2, AlertCircle, ArrowUpRight, ArrowDownRight, Clock,
-  Repeat, StopCircle,
+  Repeat, StopCircle, CheckCircle2, XCircle, MinusCircle,
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { usePortfolio } from '../hooks/usePortfolio'
@@ -192,6 +192,34 @@ function SettlementTimeline({ positions }) {
   )
 }
 
+// Resolved-market badge. `won` is true (user's side won), false (user's
+// side lost), or null (settled but outcome undetermined — voided market,
+// or DFlow hasn't snapped final prices yet).
+function SettlementBadge({ won }) {
+  if (won === true) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border bg-terminal-green/10 border-terminal-green/30 text-terminal-green">
+        <CheckCircle2 size={10} />
+        Won
+      </span>
+    )
+  }
+  if (won === false) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border bg-terminal-red/10 border-terminal-red/30 text-terminal-red">
+        <XCircle size={10} />
+        Lost
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border bg-terminal-muted/10 border-terminal-muted/30 text-terminal-muted">
+      <MinusCircle size={10} />
+      Settled
+    </span>
+  )
+}
+
 function PositionsTable({ positions }) {
   if (positions.length === 0) {
     return (
@@ -225,8 +253,10 @@ function PositionsTable({ positions }) {
           <tbody className="divide-y divide-terminal-border/50">
             {positions.map((p, i) => {
               const c = settlementColor(daysUntil(p.closeTime))
-              const isProfit = p.pnl > 0
-              const isLoss = p.pnl < 0
+              const pnlKnown = p.pnl !== null && p.pnl !== undefined
+              const isProfit = pnlKnown && p.pnl > 0
+              const isLoss = pnlKnown && p.pnl < 0
+              const settled = !!p.settled
               return (
                 <tr key={`${p.mint || p.marketId}-${i}`} className="hover:bg-terminal-card/50 transition-colors">
                   <td className="px-4 py-3 max-w-xs">
@@ -245,15 +275,23 @@ function PositionsTable({ positions }) {
                     {p.shares.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-right text-terminal-text">
-                    {(p.currentPrice * 100).toFixed(1)}¢
+                    {settled
+                      ? (p.won === true ? '$1.00' : p.won === false ? '$0.00' : '—')
+                      : `${(p.currentPrice * 100).toFixed(1)}¢`}
                   </td>
                   <td className={`px-4 py-3 text-right ${
                     isProfit ? 'text-terminal-green' : isLoss ? 'text-terminal-red' : 'text-terminal-muted'
                   }`}>
-                    {isProfit ? '+' : ''}${p.pnl.toFixed(2)}
+                    {pnlKnown
+                      ? `${isProfit ? '+' : ''}$${p.pnl.toFixed(2)}`
+                      : (
+                        <span title="Entry price unknown — no localStorage record and no on-chain trade history found for this position">—</span>
+                      )}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    {p.closeTime ? (() => {
+                    {settled ? (
+                      <SettlementBadge won={p.won} />
+                    ) : p.closeTime ? (() => {
                       const d = new Date(p.closeTime)
                       const includeYear = d.getFullYear() !== new Date().getFullYear()
                       const label = formatMarketClose(p.closeTime, includeYear ? 'MMM d, yyyy HH:mm' : 'MMM d, HH:mm')
