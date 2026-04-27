@@ -80,29 +80,121 @@ function readLocalPositions() {
   }
 }
 
-// Fallback: derive portfolio from localStorage positions when wallet scan has no matches.
-// Keeps the UI usable in demo/mock mode and when markets don't yet publish real mints.
+// Fallback: derive portfolio from localStorage positions when the wallet
+// scan has no matches. Keeps the UI usable in demo/mock mode, when DFlow
+// hasn't yet published outcome mints, or when the user traded against
+// markets the outcome_mints registry doesn't carry.
+//
+// We mark past-closeTime positions as `settled: true` (with `won: null`)
+// up front so the UI shows a "Settled" badge instead of a stale date —
+// that's a strict improvement even when we can't determine the winner.
+// `enrichLocalSettled` then fills in `won` for as many of those as it can
+// resolve via DFlow's search API.
 function buildPositionsFromLocal(localPositions) {
+  const now = Date.now()
   return localPositions
     .filter(p => p.status === 'filled')
-    .map(p => ({
-      source: 'local',
-      mint: null,
-      marketId: p.marketId,
-      question: p.question,
-      eventTitle: p.eventTitle,
-      category: p.category,
-      side: p.side,
-      shares: p.shares || 0,
-      entryPrice: p.price || 0,
-      currentPrice: p.price || 0,
-      closeTime: p.closeTime || null,
-      value: (p.price || 0) * (p.shares || 0),
-      pnl: 0,
-      settled: false,
-      won: null,
-      entrySource: 'local',
-    }))
+    .map(p => {
+      const closeMs = p.closeTime ? new Date(p.closeTime).getTime() : NaN
+      const settled = Number.isFinite(closeMs) && closeMs <= now
+      return {
+        source: 'local',
+        mint: null,
+        marketId: p.marketId,
+        question: p.question,
+        eventTitle: p.eventTitle,
+        category: p.category,
+        side: p.side,
+        shares: p.shares || 0,
+        entryPrice: p.price || 0,
+        currentPrice: p.price || 0,
+        closeTime: p.closeTime || null,
+        value: (p.price || 0) * (p.shares || 0),
+        pnl: 0,
+        settled,
+        won: null,
+        entrySource: 'local',
+      }
+    })
+}
+
+// Best-effort win/loss enrichment for local-fallback positions whose
+// markets have already settled. We can't look these up by mint (local
+// entries don't store one), so we fall back to DFlow's search endpoint
+// and match on event title. Returns a new array with `won` and
+// `currentPrice` filled in for positions we could resolve; positions we
+// couldn't resolve are returned unchanged.
+async function enrichLocalSettled(positions, dflowBase) {
+  const targets = positions.filter(p => p.settled && p.won === null && (p.eventTitle || p.question))
+  if (targets.length === 0) return positions
+
+  // De-dupe queries by event/question — multiple positions on the same
+  // market only need one search.
+  const queryFor = p => (p.eventTitle || p.question || '').trim()
+  const queries = Array.from(new Set(targets.map(queryFor))).filter(Boolean)
+
+  const resolutions = new Map() // query → { wonSide, status }
+  await Promise.all(queries.map(async (q) => {
+    try {
+      const url = `${dflowBase}/api/v1/search?q=${encodeURIComponent(q)}`
+      const res = await fetchWithRetry(url)
+      if (!res.ok) return
+      const payload = await res.json()
+      const events = payload?.events || payload?.data || []
+      const event = events.find(e => (e.title || '').trim().toLowerCase() === q.toLowerCase()) || events[0]
+      if (!event?.ticker) return
+
+      // Pull the resolved markets under that event. /markets is the only
+      // endpoint that consistently honors the eventTicker filter for our
+      // proxy; status=finalized narrows to determined markets.
+      const mUrl = `${dflowBase}/api/v1/markets?eventTicker=${encodeURIComponent(event.ticker)}&status=finalized&limit=50`
+      const mRes = await fetchWithRetry(mUrl)
+      if (!mRes.ok) return
+      const mPayload = await mRes.json()
+      const markets = mPayload?.markets || mPayload?.data || []
+      // Most events have one market, but some (e.g. multi-outcome) have
+      // several. Index by title so multi-position events still resolve.
+      for (const m of markets) {
+        const result = (m.result || '').toString().toLowerCase()
+        const wonSide = result === 'yes' ? 'yes' : result === 'no' ? 'no' : null
+        if (wonSide) {
+          const key = (m.title || event.title || '').trim().toLowerCase()
+          resolutions.set(key, { wonSide, status: m.status })
+        }
+      }
+      // Also key by event title as a fallback for positions whose stored
+      // question matches the event title rather than the market title.
+      const eventKey = (event.title || '').trim().toLowerCase()
+      if (!resolutions.has(eventKey) && markets.length === 1) {
+        const m = markets[0]
+        const result = (m.result || '').toString().toLowerCase()
+        if (result === 'yes' || result === 'no') {
+          resolutions.set(eventKey, { wonSide: result, status: m.status })
+        }
+      }
+    } catch {
+      // best-effort: a missing/failed lookup just leaves won=null
+    }
+  }))
+
+  if (resolutions.size === 0) return positions
+
+  return positions.map(p => {
+    if (!p.settled || p.won !== null) return p
+    const titleKey = (p.question || '').trim().toLowerCase()
+    const eventKey = (p.eventTitle || '').trim().toLowerCase()
+    const hit = resolutions.get(titleKey) || resolutions.get(eventKey)
+    if (!hit) return p
+    const won = hit.wonSide === p.side
+    const perShare = won ? 1 : 0
+    return {
+      ...p,
+      won,
+      currentPrice: perShare,
+      value: perShare * p.shares,
+      pnl: (perShare - (p.entryPrice || 0)) * p.shares,
+    }
+  })
 }
 
 // Compute the realized payout per share for a position. For settled markets
@@ -161,8 +253,14 @@ export function usePortfolio() {
 
       if (held.length === 0) {
         // No outcome tokens in wallet — fall back to localStorage positions
-        setPositions(buildPositionsFromLocal(localPositions))
+        const local = buildPositionsFromLocal(localPositions)
+        setPositions(local)
         setSource('local')
+        // Best-effort: resolve win/loss for past-closeTime positions in
+        // the background. UI updates again when this completes.
+        enrichLocalSettled(local, DFLOW_BASE).then(enriched => {
+          if (enriched !== local) setPositions(enriched)
+        })
         return
       }
 
@@ -215,8 +313,12 @@ export function usePortfolio() {
 
       const clean = resolved.filter(Boolean)
       if (clean.length === 0) {
-        setPositions(buildPositionsFromLocal(localPositions))
+        const local = buildPositionsFromLocal(localPositions)
+        setPositions(local)
         setSource('local')
+        enrichLocalSettled(local, DFLOW_BASE).then(enriched => {
+          if (enriched !== local) setPositions(enriched)
+        })
       } else {
         setPositions(clean)
         setSource('wallet')
@@ -225,8 +327,12 @@ export function usePortfolio() {
       // Wallet RPC or outcome_mints unreachable — fall back to localStorage
       reportError(err, { context: 'usePortfolio' })
       setError(err.message || 'Portfolio fetch failed')
-      setPositions(buildPositionsFromLocal(localPositions))
+      const local = buildPositionsFromLocal(localPositions)
+      setPositions(local)
       setSource('local')
+      enrichLocalSettled(local, DFLOW_BASE).then(enriched => {
+        if (enriched !== local) setPositions(enriched)
+      })
     } finally {
       setLoading(false)
     }
