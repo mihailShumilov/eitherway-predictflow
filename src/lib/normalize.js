@@ -10,6 +10,18 @@ import { toCloseTimeIso } from './dateFormat'
 // Each helper returns either a normalized object or `null` when the input
 // can't be interpreted. Callers should `.filter(Boolean)` after mapping.
 
+// Parse a book level (yesBid/yesAsk/noBid/noAsk) without inventing a
+// fallback. DFlow ships `null` for empty sides of the book, and that
+// signal must be preserved end-to-end — replacing null with 0.5 (the
+// midpoint) makes a one-sided market look fully tradeable, which is
+// exactly how route_not_found rejections surface late in the flow.
+// Returns a finite number, or null if the input is missing/non-numeric.
+export function parseLevel(v) {
+  if (v === null || v === undefined || v === '') return null
+  const n = typeof v === 'number' ? v : parseFloat(v)
+  return Number.isFinite(n) ? n : null
+}
+
 function toMs(t) {
   if (typeof t === 'number') return t < 1e12 ? t * 1000 : t
   if (t === null || t === undefined || t === '') return null
@@ -110,6 +122,14 @@ export function extractOutcomeMints(m) {
 // TradePanel can't actually route an order). DFlow ships
 // `status: "finalized"` for resolved/expired markets even when the timestamp
 // window says otherwise — so always trust status when present.
+//
+// We also require at least one published price level. A market with all
+// four book levels (yesBid/yesAsk/noBid/noAsk) null is effectively dead —
+// nothing to fill against on either side. This catches markets like
+// post-resolution awaiting-settlement state where DFlow's aggregator
+// returns `route_not_found` for any /order request. Note that ANY
+// non-null level keeps the market tradeable: yesBid alone makes NO
+// buyable (since yesBid + noAsk = 1), so partial liquidity is fine.
 export function isMarketTradeable(market) {
   if (!market) return false
   const status = (market.status || '').toLowerCase()
@@ -117,7 +137,24 @@ export function isMarketTradeable(market) {
   const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
   if (Number.isFinite(closeMs) && closeMs <= Date.now()) return false
   if (!market.yesMint || !market.noMint) return false
+  const hasAnyLevel = [market.yesBid, market.yesAsk, market.noBid, market.noAsk]
+    .some((v) => v !== null && v !== undefined && v !== '')
+  if (!hasAnyLevel) return false
   return true
+}
+
+// Per-side liquidity check. A BUY needs an ask (or a derived ask via
+// the inverse side's bid: yesAsk ≈ 1 − noBid, noAsk ≈ 1 − yesBid).
+// Used by the trade panel to disable the BUY button before submission
+// rather than letting DFlow return route_not_found.
+export function canBuySide(market, side) {
+  if (!market || (side !== 'yes' && side !== 'no')) return false
+  if (side === 'yes') {
+    return market.yesAsk != null && market.yesAsk !== ''
+      || market.noBid != null && market.noBid !== ''
+  }
+  return market.noAsk != null && market.noAsk !== ''
+    || market.yesBid != null && market.yesBid !== ''
 }
 
 // market/by-mint response normalizer.

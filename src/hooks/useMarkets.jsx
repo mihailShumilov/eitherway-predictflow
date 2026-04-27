@@ -6,7 +6,7 @@ import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
 // trade against fake prices. Mock fallback stays available on devnet/other.
 const ALLOW_MOCK_FALLBACK = (SOLANA_NETWORK || '').toLowerCase() !== 'mainnet'
 import { fetchWithRetry } from '../lib/http'
-import { extractOutcomeMints, isMarketTradeable } from '../lib/normalize'
+import { extractOutcomeMints, isMarketTradeable, parseLevel } from '../lib/normalize'
 import { safeGet, safeSet } from '../lib/storage'
 import { toCloseTimeIso } from '../lib/dateFormat'
 
@@ -123,10 +123,12 @@ export function MarketsProvider({ children }) {
           subtitle: m.subtitle || '',
           yesSubTitle: m.yesSubTitle || m.yes_sub_title || '',
           noSubTitle: m.noSubTitle || m.no_sub_title || '',
-          yesAsk: parseFloat(m.yesAsk || m.yes_ask || m.yesPrice || 0.5),
-          noAsk: parseFloat(m.noAsk || m.no_ask || m.noPrice || 0.5),
-          yesBid: parseFloat(m.yesBid || m.yes_bid || m.yesAsk || 0.5),
-          noBid: parseFloat(m.noBid || m.no_bid || m.noAsk || 0.5),
+          // Preserve null when DFlow ships an empty side of the book —
+          // see parseLevel for why this matters.
+          yesAsk: parseLevel(m.yesAsk ?? m.yes_ask ?? m.yesPrice),
+          noAsk: parseLevel(m.noAsk ?? m.no_ask ?? m.noPrice),
+          yesBid: parseLevel(m.yesBid ?? m.yes_bid),
+          noBid: parseLevel(m.noBid ?? m.no_bid),
           volume: parseFloat(m.volume || 0),
           liquidity: parseFloat(m.liquidity || 0),
           status: m.status || 'active',

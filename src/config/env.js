@@ -24,6 +24,18 @@ function list(key, fallback) {
   return v.split(',').map(s => s.trim()).filter(Boolean)
 }
 
+// Same-origin paths (e.g. `/api/rpc`) need to be expanded to an absolute
+// URL because `new Connection()` (and other web3.js consumers) parse the
+// endpoint with `new URL(endpoint)` which rejects relative paths.
+function absolutize(url) {
+  if (!url) return url
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return url  // already absolute (http, https, ws, wss, ...)
+  if (typeof window !== 'undefined' && window.location) {
+    return new URL(url, window.location.origin).toString()
+  }
+  return url
+}
+
 export const IS_DEV = !!env.DEV
 export const IS_PROD = !!env.PROD
 export const MODE = env.MODE || 'development'
@@ -48,7 +60,7 @@ export const SOLANA_NETWORK = str('VITE_SOLANA_NETWORK', 'mainnet')
 export const SOLANA_RPC_ENDPOINTS = list('VITE_SOLANA_RPC_ENDPOINTS', [
   'https://api.devnet.solana.com',
   'https://api.mainnet-beta.solana.com',
-])
+]).map(absolutize)
 export const USDC_MINT = str('VITE_USDC_MINT', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
 export const SPL_TOKEN_PROGRAM = str('VITE_SPL_TOKEN_PROGRAM', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
 
@@ -80,7 +92,7 @@ export const KEEPER_API_BASE = str('VITE_KEEPER_API_BASE', '')
 // Solana RPC URL the frontend uses for read-only nonce-account ops + the
 // occasional balance check. Defaults to the first endpoint in
 // SOLANA_RPC_ENDPOINTS so we don't need a separate env var in dev.
-export const SOLANA_RPC_URL = str('VITE_SOLANA_RPC_URL', '')
+export const SOLANA_RPC_URL = absolutize(str('VITE_SOLANA_RPC_URL', ''))
 
 // Legal / contact
 export const TERMS_URL = str('VITE_TERMS_URL', '')

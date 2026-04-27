@@ -52,6 +52,30 @@ function connectionFor(rpcUrl) {
   return c
 }
 
+// Poll-based confirmation. Why not Connection.confirmTransaction:
+// web3.js's confirmTransaction opens a pubsub WebSocket on a derived
+// `ws://host:port+1/path` URL — it's brittle (port+1 doesn't exist
+// behind our /api/rpc same-origin proxy) and the WS upgrade also wouldn't
+// be reachable through Vite's HTTP middleware in dev. Polling
+// getSignatureStatuses gets the same answer over plain JSON-RPC.
+async function waitForConfirmation(conn, signature, timeoutMs = 90_000) {
+  const start = Date.now()
+  const POLL_MS = 1500
+  const targets = new Set(['confirmed', 'finalized'])
+  while (Date.now() - start < timeoutMs) {
+    const { value } = await conn.getSignatureStatuses([signature])
+    const status = value?.[0]
+    if (status?.err) {
+      throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`)
+    }
+    if (status?.confirmationStatus && targets.has(status.confirmationStatus)) {
+      return
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS))
+  }
+  throw new Error(`Transaction not confirmed within ${timeoutMs}ms`)
+}
+
 // Read the current nonce value off-chain. Used both at order placement
 // (to bake into the tx) and on the keeper side (to verify the signed tx
 // still matches the live nonce — drift means the tx was already used or
@@ -111,11 +135,7 @@ export async function createDurableNonce({
   const signature = await signAndSend(tx)
 
   // Wait for confirmation and read back the initial nonce value.
-  await conn.confirmTransaction({
-    signature,
-    blockhash: blockhash.blockhash,
-    lastValidBlockHeight: blockhash.lastValidBlockHeight,
-  }, 'confirmed')
+  await waitForConfirmation(conn, signature)
 
   const initialNonce = await getNonce(rpcUrl, noncePubkey.publicKey.toBase58())
   if (!initialNonce) {

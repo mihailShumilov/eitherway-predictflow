@@ -13,6 +13,7 @@ import { useUserTier } from '../hooks/useUserTier'
 import { useUpgradeModal } from '../hooks/useUpgradeModal'
 import { canCreateConditionalOrder } from '../services/feeService'
 import { ALLOW_SYNTHESIZED_MINTS } from '../config/env'
+import { canBuySide } from '../lib/normalize'
 import { getPositions, subscribePositions, getPositionsVersion } from '../lib/storage'
 import TradeStatusBadge from './trade/TradeStatusBadge'
 import SideSelector from './trade/SideSelector'
@@ -54,9 +55,15 @@ export default function TradePanel({ market }) {
   const insufficientUsdc = connected && usdcBalance != null && amountNum > 0 && amountNum > usdcBalance
   const hasRealMints = !!(market.yesMint && market.noMint)
   const mintsMissing = !hasRealMints && !ALLOW_SYNTHESIZED_MINTS
-  const shares = amount ? (parseFloat(amount) / price).toFixed(2) : '0'
-  const potentialPayout = amount ? (parseFloat(amount) / price).toFixed(2) : '0'
-  const profit = amount ? ((parseFloat(amount) / price) - parseFloat(amount)).toFixed(2) : '0'
+  // Pre-flight liquidity gate: if neither a direct ask nor a derivable ask
+  // exists for the chosen side, DFlow's aggregator returns route_not_found.
+  // Block the BUY here so the user sees a meaningful warning instead of a
+  // raw upstream error after they've signed in their wallet.
+  const sideUnbuyable = !canBuySide(market, side)
+  const priceUsable = Number.isFinite(price) && price > 0
+  const shares = amount && priceUsable ? (parseFloat(amount) / price).toFixed(2) : '0'
+  const potentialPayout = amount && priceUsable ? (parseFloat(amount) / price).toFixed(2) : '0'
+  const profit = amount && priceUsable ? ((parseFloat(amount) / price) - parseFloat(amount)).toFixed(2) : '0'
 
   const visibleTabs = ORDER_TABS.filter(t => {
     if (t.key === 'stop-loss' || t.key === 'take-profit') return hasPos
@@ -122,6 +129,7 @@ export default function TradePanel({ market }) {
   const primaryDisabled = trade.submitting
     || isClosed
     || mintsMissing
+    || sideUnbuyable
     || (!needsCta && (!amount || insufficientUsdc))
     || (!needsCta && triggerInvalid)
 
@@ -150,6 +158,18 @@ export default function TradePanel({ market }) {
               <p className="font-medium text-terminal-text">Market not tradeable</p>
               <p className="mt-0.5 text-terminal-yellow/80">
                 DFlow hasn't published outcome mints for this market yet. You can still watch price and depth.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {sideUnbuyable && !isClosed && !mintsMissing && (
+          <div className="flex items-start gap-2 bg-terminal-yellow/10 border border-terminal-yellow/30 rounded-lg p-3 text-xs text-terminal-yellow">
+            <AlertCircle size={14} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium text-terminal-text">No asks on {side.toUpperCase()} right now</p>
+              <p className="mt-0.5 text-terminal-yellow/80">
+                The book is one-sided — nobody is selling {side.toUpperCase()}. Switch sides or wait for new orders.
               </p>
             </div>
           </div>

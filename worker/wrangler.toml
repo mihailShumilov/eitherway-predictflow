@@ -30,7 +30,7 @@ new_classes = ["PriceWatcher"]
 [[d1_databases]]
 binding = "DB"
 database_name = "predictflow"
-database_id = "REPLACE_WITH_DATABASE_ID"
+database_id = "34573959-0e38-4b35-9cfa-6e77afefee48"
 
 # Secrets (set with `wrangler secret put <NAME>` per environment, never commit):
 #   SIGNED_TX_KEY        — base64-encoded 32-byte AES-256 key for envelope encryption.
@@ -61,7 +61,7 @@ bindings = [
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "predictflow"
-database_id = "REPLACE_WITH_DATABASE_ID"
+database_id = "34573959-0e38-4b35-9cfa-6e77afefee48"
 
 [env.production.vars]
 ENVIRONMENT = "production"

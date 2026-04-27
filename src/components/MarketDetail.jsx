@@ -2,7 +2,7 @@ import React, { Suspense, lazy, useState } from 'react'
 import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock, Share2, Check } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { formatMarketCloseFull } from '../lib/dateFormat'
-import { formatCompactNumber, humanizeOutcomeLabel } from '../lib/format'
+import { formatCompactNumber, humanizeOutcomeLabel, priceToPercent, priceToPercentFine } from '../lib/format'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import DepthChart from './DepthChart'
 import OrderBook from './OrderBook'
@@ -138,20 +138,20 @@ export default function MarketDetail({ market, onClose }) {
           <div className="px-4 md:px-6 pb-3 flex items-center gap-6">
             <div className="flex items-center gap-2">
               <span className="text-2xl font-mono font-bold text-terminal-green">
-                {(market.yesAsk * 100).toFixed(0)}¢
+                {priceToPercent(market.yesAsk)}
               </span>
               <span className="text-xs text-terminal-muted">YES</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-2xl font-mono font-bold text-terminal-red">
-                {(market.noAsk * 100).toFixed(0)}¢
+                {priceToPercent(market.noAsk)}
               </span>
               <span className="text-xs text-terminal-muted">NO</span>
             </div>
             <div className="flex-1 h-2 bg-terminal-card rounded-full overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-terminal-green to-emerald-400 rounded-full transition-all"
-                style={{ width: `${(market.yesAsk * 100).toFixed(0)}%` }}
+                style={{ width: `${Number.isFinite(market.yesAsk) ? (market.yesAsk * 100).toFixed(0) : 0}%` }}
               />
             </div>
           </div>
@@ -198,23 +198,25 @@ export default function MarketDetail({ market, onClose }) {
                   <div className="flex justify-between">
                     <span className="text-terminal-muted">YES Ask / Bid</span>
                     <span className="font-mono">
-                      <span className="text-terminal-green">{(market.yesAsk * 100).toFixed(1)}¢</span>
+                      <span className="text-terminal-green">{priceToPercentFine(market.yesAsk)}</span>
                       {' / '}
-                      <span className="text-terminal-green/70">{(market.yesBid * 100).toFixed(1)}¢</span>
+                      <span className="text-terminal-green/70">{priceToPercentFine(market.yesBid)}</span>
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-terminal-muted">NO Ask / Bid</span>
                     <span className="font-mono">
-                      <span className="text-terminal-red">{(market.noAsk * 100).toFixed(1)}¢</span>
+                      <span className="text-terminal-red">{priceToPercentFine(market.noAsk)}</span>
                       {' / '}
-                      <span className="text-terminal-red/70">{(market.noBid * 100).toFixed(1)}¢</span>
+                      <span className="text-terminal-red/70">{priceToPercentFine(market.noBid)}</span>
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-terminal-muted">Spread</span>
                     <span className="font-mono text-terminal-text">
-                      {((market.yesAsk - market.yesBid) * 100).toFixed(1)}¢
+                      {Number.isFinite(market.yesAsk) && Number.isFinite(market.yesBid)
+                        ? `${((market.yesAsk - market.yesBid) * 100).toFixed(1)}¢`
+                        : '—'}
                     </span>
                   </div>
                   <div className="flex justify-between">

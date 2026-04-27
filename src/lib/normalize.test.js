@@ -6,6 +6,7 @@ import {
   normalizeMarket,
   extractOutcomeMints,
   isMarketTradeable,
+  canBuySide,
 } from './normalize'
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
@@ -139,31 +140,76 @@ describe('isMarketTradeable', () => {
   const future = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString()
   const past = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
   const mints = { yesMint: 'YYY', noMint: 'NNN' }
+  const liquidity = { yesBid: '0.40', yesAsk: '0.42', noBid: '0.58', noAsk: '0.60' }
 
-  it('returns true for active markets with future close time and mints', () => {
-    expect(isMarketTradeable({ status: 'active', closeTime: future, ...mints })).toBe(true)
+  it('returns true for active markets with future close time, mints, and a live book', () => {
+    expect(isMarketTradeable({ status: 'active', closeTime: future, ...mints, ...liquidity })).toBe(true)
   })
 
   it('returns false when status is finalized', () => {
-    expect(isMarketTradeable({ status: 'finalized', closeTime: future, ...mints })).toBe(false)
+    expect(isMarketTradeable({ status: 'finalized', closeTime: future, ...mints, ...liquidity })).toBe(false)
   })
 
   it('returns false when close time has passed', () => {
-    expect(isMarketTradeable({ status: 'active', closeTime: past, ...mints })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: past, ...mints, ...liquidity })).toBe(false)
   })
 
-  it('treats missing close time as tradeable when status and mints are set', () => {
-    expect(isMarketTradeable({ status: 'active', ...mints })).toBe(true)
+  it('treats missing close time as tradeable when status, mints, and a level are set', () => {
+    expect(isMarketTradeable({ status: 'active', ...mints, ...liquidity })).toBe(true)
   })
 
   it('returns false when outcome mints are missing', () => {
-    expect(isMarketTradeable({ status: 'active', closeTime: future })).toBe(false)
-    expect(isMarketTradeable({ status: 'active', closeTime: future, yesMint: 'YYY' })).toBe(false)
-    expect(isMarketTradeable({ status: 'active', closeTime: future, noMint: 'NNN' })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: future, ...liquidity })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: future, yesMint: 'YYY', ...liquidity })).toBe(false)
+    expect(isMarketTradeable({ status: 'active', closeTime: future, noMint: 'NNN', ...liquidity })).toBe(false)
+  })
+
+  it('returns false when the book is fully empty (all four levels null)', () => {
+    expect(isMarketTradeable({
+      status: 'active', closeTime: future, ...mints,
+      yesBid: null, yesAsk: null, noBid: null, noAsk: null,
+    })).toBe(false)
+  })
+
+  it('returns true with partial liquidity (only one side resting)', () => {
+    // Mirrors a near-resolved market where only the YES bid + NO ask remain.
+    // NO is still buyable (and YES still sellable) so the market stays tradeable.
+    expect(isMarketTradeable({
+      status: 'active', closeTime: future, ...mints,
+      yesBid: '0.99', yesAsk: null, noBid: null, noAsk: '0.01',
+    })).toBe(true)
   })
 
   it('returns false for nullish input', () => {
     expect(isMarketTradeable(null)).toBe(false)
     expect(isMarketTradeable(undefined)).toBe(false)
+  })
+})
+
+describe('canBuySide', () => {
+  it('YES is buyable when yesAsk is present', () => {
+    expect(canBuySide({ yesAsk: '0.42', noBid: null }, 'yes')).toBe(true)
+  })
+
+  it('YES is buyable when noBid is present (derives yesAsk = 1 − noBid)', () => {
+    expect(canBuySide({ yesAsk: null, noBid: '0.58' }, 'yes')).toBe(true)
+  })
+
+  it('YES is NOT buyable when both yesAsk and noBid are null', () => {
+    expect(canBuySide({ yesAsk: null, noBid: null }, 'yes')).toBe(false)
+  })
+
+  it('NO is buyable when noAsk OR yesBid is present', () => {
+    expect(canBuySide({ noAsk: '0.60', yesBid: null }, 'no')).toBe(true)
+    expect(canBuySide({ noAsk: null, yesBid: '0.40' }, 'no')).toBe(true)
+  })
+
+  it('NO is NOT buyable when both noAsk and yesBid are null', () => {
+    expect(canBuySide({ noAsk: null, yesBid: null }, 'no')).toBe(false)
+  })
+
+  it('rejects garbage side or null market', () => {
+    expect(canBuySide(null, 'yes')).toBe(false)
+    expect(canBuySide({ yesAsk: '0.5' }, 'maybe')).toBe(false)
   })
 })
