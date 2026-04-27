@@ -13,6 +13,7 @@ import { SOLANA_NETWORK } from '../config/env'
 const IS_MAINNET = (SOLANA_NETWORK || '').toLowerCase() === 'mainnet'
 const LOCAL_POSITIONS_LABEL = IS_MAINNET ? 'Local positions' : 'Local positions (demo)'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { useKeeperOrders } from '../hooks/useKeeperOrders'
 import { useDCA, DCA_FREQUENCIES } from '../hooks/useDCA'
 import ActiveOrders from './ActiveOrders'
 import Skeleton from './Skeleton'
@@ -282,8 +283,13 @@ export default function Portfolio() {
   const { connected, connect, shortAddress } = useWallet()
   const { positions, totalValue, totalPnl, count, loading, error, source, refresh } = usePortfolio()
   const { orders } = useConditionalOrders()
+  const { orders: keeperOrders } = useKeeperOrders()
   const { strategies: dcaStrategies, stopStrategy } = useDCA()
-  const hasOrders = orders.length > 0
+  // Either backend may hold orders (keeper for production limit/SL/TP, local
+  // for the legacy in-memory fallback). The empty-state gate has to look at
+  // both — otherwise a user with only keeper orders sees "No conditional
+  // orders" while ActiveOrders would render fine.
+  const hasOrders = orders.length > 0 || keeperOrders.length > 0
 
   if (!connected) {
     return (
