@@ -47,15 +47,16 @@ WebSocket are still hit directly from the browser.
 
 1. [Features](#features)
 2. [Architecture](#architecture)
-3. [Data flow](#data-flow)
-4. [Monetization & fees](#monetization--fees)
-5. [localStorage schema](#localstorage-schema)
-6. [Environment variables](#environment-variables)
-7. [Local development](#local-development)
-8. [Production deployment](#production-deployment)
-9. [Security model](#security-model)
-10. [Testing](#testing)
-11. [Troubleshooting](#troubleshooting)
+3. [Keeper backend](#keeper-backend)
+4. [Data flow](#data-flow)
+5. [Monetization & fees](#monetization--fees)
+6. [localStorage schema](#localstorage-schema)
+7. [Environment variables](#environment-variables)
+8. [Local development](#local-development)
+9. [Production deployment](#production-deployment)
+10. [Security model](#security-model)
+11. [Testing](#testing)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -193,6 +194,79 @@ src/
   `getComputedStyle`, so a theme swap never requires touching chart source.
 - Monospace: `JetBrains Mono` / `Fira Code`. Sans: `Inter`. Loaded from
   Google Fonts in `index.html`.
+
+---
+
+## Keeper backend
+
+PredictFlow ships with a Cloudflare Worker keeper (`worker/`) that handles the
+limit-order lifecycle so conditional orders fire even when the user's browser
+is closed.
+
+```
+Browser ─HTTP──▶ Pages Function (DFlow REST proxy, /api/dflow*)
+        │
+        ├─HTTP─▶ Keeper Worker (limit-order API, /orders, /auth, /durable-nonces)
+        │         │
+        │         ├─D1──▶ orders, sessions, durable_nonces, audit_log
+        │         ├─DO──▶ PriceWatcher (one per market with pending orders)
+        │         │         └─WS── DFlow `prices` channel (real-time triggers)
+        │         └─RPC─▶ Helius (sendRawTransaction on trigger crossing)
+        │
+        └─Wallet─▶ Phantom / Solflare / Backpack (signs SIWS challenge,
+                   nonce-account creation tx, durable-nonce-bound order tx)
+```
+
+**Routing:** when `VITE_KEEPER_API_BASE` is set, limit / stop-loss /
+take-profit orders go through the keeper. Without it, the app falls back
+to the original tab-dependent localStorage flow. DCA always runs in the
+browser regardless — see [Order types and where they execute](#order-types-and-where-they-execute).
+
+**Custody model:** non-custodial in the standard industry sense. The keeper
+holds zero private keys; user signs every on-chain action. The keeper holds
+encrypted, pre-authorized signed transactions bounded by user-controlled
+durable nonces. Closing the nonce account on-chain invalidates any pending
+signed tx — the user's hard escape hatch. See `worker/README.md` and the
+custody-model memory note for details.
+
+### Order types and where they execute
+
+| Order type     | Direction          | When `VITE_KEEPER_API_BASE` is set | When unset (legacy) |
+|----------------|--------------------|------------------------------------|---------------------|
+| Market         | USDC → outcome     | Browser-direct DFlow `/order`      | Same                |
+| Limit          | USDC → outcome     | **Keeper** (durable nonce)         | localStorage + tab  |
+| Stop-loss      | outcome → USDC     | **Keeper** (durable nonce)         | localStorage + tab  |
+| Take-profit   | outcome → USDC     | **Keeper** (durable nonce)         | localStorage + tab  |
+| DCA            | USDC → outcome     | Browser only (tab-dependent)       | Browser only        |
+
+DCA hasn't been migrated to the keeper because each scheduled buy needs
+its own durable nonce — pre-signing N nonce accounts upfront produces a
+poor UX past 5–10 purchases. See `memory/dflow_api_reference.md` for the
+DCA-on-keeper design space and tradeoffs.
+
+### Bootstrapping the keeper
+
+Full step-by-step lives in `worker/README.md`. Summary:
+
+1. `cd worker && npm install`
+2. `npx wrangler login`
+3. `npx wrangler d1 create predictflow` → paste `database_id` into `wrangler.toml`
+4. `npm run db:migrate:local` (and `db:migrate:remote:prod` before prod deploy)
+5. `cp .dev.vars.example .dev.vars` and fill in keys + DFlow + Helius URLs
+6. `npm run dev` (local) or `npm run deploy:prod` (production)
+
+After the first deploy, set `VITE_KEEPER_API_BASE` in the frontend's CF
+Pages env to the Worker URL — the frontend automatically routes limit /
+stop-loss / take-profit through it.
+
+### Operations
+
+`worker/RUNBOOK.md` documents:
+
+- The order state machine (`pending → armed → submitting → filled/failed`).
+- SQL queries for fill-rate, WS health, stuck submissions.
+- Incident response for the four most common failure modes.
+- Emergency stop, key rotation, deploy checklist.
 
 ---
 
@@ -543,6 +617,8 @@ Pages), set the same names in the dashboard.
 | `VITE_DFLOW_DOCS_URL` | `https://docs.dflow.net` | Linked from the About modal. |
 | `VITE_DFLOW_ALLOWED_PROGRAMS` | *empty* | Comma-separated extra program IDs for `assertAllowedPrograms`. **Populate with the DFlow router program before shipping.** |
 | `VITE_LIVE_PRICE_URL` | *empty* | REST fallback for live prices when no WS. `{eventTicker}` is substituted per order. |
+| `VITE_KEEPER_API_BASE` | *empty* | Public URL of the deployed keeper Worker (`worker/`). When set, limit / stop-loss / take-profit go through the keeper for browser-closed execution. When empty, those order types use the legacy tab-dependent localStorage flow. See [Keeper backend](#keeper-backend). |
+| `VITE_SOLANA_RPC_URL` | *empty* | RPC URL used by `useKeeperLimitOrder` for nonce-account reads + lookup-table resolution. Falls back to the first entry in `VITE_SOLANA_RPC_ENDPOINTS` when unset. |
 
 ### Solana
 
@@ -635,6 +711,42 @@ works in Cloudflare Pages, so `.env.local` stays 1:1 with prod env vars.
 and flips a yellow "Demo mode" banner. You can still click markets, open
 the trade panel, etc.
 
+### Running with the keeper backend (optional, for limit orders)
+
+The frontend works standalone with limit/stop-loss/take-profit on the
+legacy tab-dependent path. To exercise the production-grade keeper flow
+locally, run the Worker too in a second terminal:
+
+```bash
+# Terminal 1 — frontend
+npm run dev                      # → http://localhost:5173
+
+# Terminal 2 — keeper Worker
+cd worker
+npm install                      # first time only
+# Follow the "Local development" section in worker/README.md to:
+#   - npx wrangler login
+#   - create the D1 database
+#   - apply migrations to local D1
+#   - copy .dev.vars.example → .dev.vars and fill in keys
+npm run dev                      # → http://localhost:8787
+```
+
+Then point the frontend at the local keeper:
+
+```bash
+# In the repo root .env.local
+echo 'VITE_KEEPER_API_BASE="http://localhost:8787"' >> .env.local
+```
+
+Restart `npm run dev` for the frontend to pick up the new env var.
+Place a limit order — the wallet will prompt for the SIWS sign-in,
+nonce account creation, and the durable-nonce-bound swap, then the
+order shows up in `Active Orders` with the "keeper" badge.
+
+For a complete walkthrough of the local keeper bootstrap (including
+CORS, secrets, smoke tests), see `worker/README.md`.
+
 ### Scripts
 
 ```bash
@@ -674,9 +786,31 @@ go through the simulated-fill path. **Never ship this config to production.**
 
 ## Production deployment
 
-PredictFlow ships as a static SPA + two required upstream proxies (DFlow
-REST and optional KYC backend). There's **no server to run here** —
-pick a hosting provider and configure the proxy.
+PredictFlow has **two deployable pieces**:
+
+1. **Frontend SPA + DFlow proxy** (this directory) — ships as a static
+   site behind a Cloudflare Pages Function that injects the DFlow
+   API key. Documented below.
+2. **Keeper Worker** (`worker/`) — Cloudflare Worker that owns the limit
+   / stop-loss / take-profit lifecycle. Has its own deploy walkthrough
+   in `worker/README.md` ("Production deployment" section). Deploy
+   independently — different artifact, different secrets, different
+   bindings. Without it, the frontend works fine but conditional orders
+   fall back to the tab-dependent legacy path.
+
+Order them however you like; the keeper has no hard dependency on the
+frontend, and the frontend works without the keeper. **For full feature
+parity in production, deploy both.** Once both are up, set
+`VITE_KEEPER_API_BASE` in the frontend's CF Pages env to the keeper's
+public URL and trigger a frontend rebuild — the frontend autodetects the
+keeper and routes conditional orders through it.
+
+The rest of this section covers the **frontend / DFlow proxy** deploy.
+
+PredictFlow's frontend ships as a static SPA + two required upstream
+proxies (DFlow REST and optional KYC backend). There's **no long-running
+server to operate** for the frontend tier — pick a hosting provider and
+configure the proxy.
 
 ### Pre-flight checklist
 
@@ -711,6 +845,12 @@ Before flipping any prod switch:
 - [ ] `VITE_FEE_WALLET` set to a Solana pubkey you control (not the
       placeholder). Confirm a $1 trade in preview triggers a second
       signed tx that sweeps the fee — see [Monetization & fees](#monetization--fees).
+- [ ] **Keeper deployed (optional but recommended).** Follow
+      `worker/README.md` "Production deployment" — D1 created, secrets
+      set, `npm run deploy:prod` returns a public URL. Then add
+      `VITE_KEEPER_API_BASE` here so limit / stop-loss / take-profit
+      execute server-side. Without this, conditional orders only fire
+      while the user's tab is open.
 
 > **Note on non-Cloudflare hosts.** The repo's primary deployment target
 > is Cloudflare Pages — the `functions/api/dflow*` Pages Functions
@@ -903,6 +1043,7 @@ as **Secret**; everything else can be a plain variable.
 | `VITE_PROOF_URL` | `https://www.dflow.net/proof` |
 | `VITE_KYC_CHECK_URL` | `https://kyc.yourdomain.com/check` *(your backend)* |
 | `VITE_LIVE_PRICE_URL` | *(optional REST fallback; leave empty if WS is healthy)* |
+| `VITE_KEEPER_API_BASE` | `https://api.predictflow.app` *(your deployed keeper Worker URL — see worker/README.md)* |
 | `VITE_SENTRY_DSN` | *(optional)* |
 | `VITE_ANALYTICS_PROVIDER` | `''` / `posthog` / `plausible` / `custom` |
 | `VITE_ANALYTICS_WRITE_KEY` | *(optional, matches provider)* |
@@ -1007,8 +1148,18 @@ Then in a browser:
    be same-origin (`trade.yourdomain.com`) and return 200.
 3. Connect a Solana wallet. Try a $1 market trade. Watch the Pages
    dashboard → **Functions → Real-time logs** for any Function errors.
-4. Place a limit order. Confirm the persistent "Pending orders" banner
-   appears (expected — conditional orders run client-side).
+4. Place a limit order.
+   - **With keeper deployed and `VITE_KEEPER_API_BASE` set:** the order
+     prompts three wallet popups (SIWS sign-in, durable nonce account
+     creation, durable-nonce-bound DFlow swap) and shows up in
+     `Active Orders` with the "keeper" badge. Closing the tab is safe;
+     the keeper holds the signed tx and submits when the trigger
+     crosses. Tail the Worker (`cd worker && npm run tail:prod`)
+     during the test to see the request and the WS-side trigger
+     evaluation.
+   - **Without keeper:** the persistent "Pending orders — keep tab open"
+     banner appears (expected — conditional orders run client-side
+     under the legacy flow).
 
 #### Step 8 — Local testing with Wrangler (optional)
 
@@ -1222,9 +1373,26 @@ there's no price feed. Set one. (In dev the simulated-drift path only
 runs when `VITE_ALLOW_SIMULATED_FILLS=true`.)
 
 **Pending orders / active DCA don't execute after I closed the tab.**
-By design — everything runs in the browser. There's a persistent banner
-reminding the user. A real deployment needs a server-side scheduler to
-execute orders while users are offline.
+- For **limit / stop-loss / take-profit**: deploy the keeper Worker
+  (`worker/`) and set `VITE_KEEPER_API_BASE`. With the keeper, those
+  order types fire server-side regardless of the browser. Without it,
+  the legacy localStorage path applies and orders pause when the tab
+  closes — there's a persistent banner reminding the user.
+- For **DCA**: still tab-dependent in all configurations — see the
+  [Keeper backend](#keeper-backend) note about why DCA hasn't been
+  migrated.
+
+**Limit order placed but never fires (keeper enabled).**
+Open `worker/RUNBOOK.md` → "Symptom: a user reports their fill never
+happened" — it walks the audit-log path. Quickest first check:
+`cd worker && npm run db:console:remote -- "SELECT id,status,failure_reason FROM orders WHERE wallet='<pubkey>' ORDER BY created_at DESC LIMIT 10"`.
+
+**`signed_tx_required` / `nonce_not_registered` from keeper API.**
+The frontend tried to place an order without going through the
+durable-nonce flow, or with a nonce that's not registered for this
+wallet+market. Usually means the wallet popup for nonce account
+creation was rejected. Try again — the second attempt will see the
+freshly-funded nonce.
 
 **Trade signs but no fee transfer pops up.**
 Either `VITE_FEE_WALLET` isn't set (placeholder ⇒ fee transfer is

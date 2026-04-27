@@ -9,5 +9,8 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.js'],
     css: false,
     restoreMocks: true,
+    // Worker has its own vitest config + runtime; don't sweep its tests
+    // into the jsdom-targeted frontend run.
+    exclude: ['**/node_modules/**', 'worker/**'],
   },
 })

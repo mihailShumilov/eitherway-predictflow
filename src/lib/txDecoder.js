@@ -19,6 +19,11 @@ const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
 const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
 const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
+// DFlow's Prediction Markets program — the on-chain router that opens /
+// closes outcome-token positions. Mainnet address; DFlow doesn't publish
+// a versioned constant, so we pin it here. Same string lives in
+// simulationErrors.js for error humanization.
+const DFLOW_PREDICT_PROGRAM = 'pReDicTmksnPfkfiz33ndSdbe2dY43KYPg4U2dbvHvb'
 
 // DFlow router program IDs. Real values should come from DFlow's docs
 // and can be overridden via VITE_DFLOW_ALLOWED_PROGRAMS (comma-separated).
@@ -30,6 +35,7 @@ function getAllowedPrograms() {
     ATA_PROGRAM,
     COMPUTE_BUDGET_PROGRAM,
     MEMO_PROGRAM,
+    DFLOW_PREDICT_PROGRAM,
   ]
   const extra = (import.meta.env?.VITE_DFLOW_ALLOWED_PROGRAMS || '')
     .split(',').map(s => s.trim()).filter(Boolean)

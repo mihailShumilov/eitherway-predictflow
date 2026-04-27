@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from 'react'
 import { useWallet } from './useWallet'
 import { DFLOW_ORDER_URL, USDC_MINT, ALLOW_SYNTHESIZED_MINTS, ALLOW_SIMULATED_FILLS } from '../config/env'
-import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
 import { track } from '../lib/analytics'
 import { safeGet, safeSet, appendPosition } from '../lib/storage'
+import { runOrderPipeline } from '../lib/orderTxPipeline'
 
 const DCAContext = createContext(null)
 
@@ -56,31 +56,28 @@ async function submitDcaBuy({ strategy, address, provider, currentPrice }) {
   }
 
   const amountLamports = Math.floor(strategy.amountPerBuy * 1e6)
-  const idempotencyKey = generateIdempotencyKey('dca')
 
   let txSigned = false
   let txSignature = null
-
-  try {
-    const url = `${DFLOW_ORDER_URL}?inputMint=${USDC_MINT}&outputMint=${encodeURIComponent(outputMint)}&amount=${amountLamports}&userPublicKey=${address}`
-    const res = await fetchWithRetry(url, {
-      headers: { 'X-Idempotency-Key': idempotencyKey },
-    }, { retries: 1, timeoutMs: 6000 })
-    if (res.ok) {
-      const data = await res.json()
-      if (provider && data.transaction) {
-        const tx = typeof data.transaction === 'string'
-          ? Uint8Array.from(atob(data.transaction), c => c.charCodeAt(0))
-          : data.transaction
-        const signed = await provider.signTransaction(tx)
-        txSigned = true
-        txSignature = signed?.signature
-          ? (typeof signed.signature === 'string' ? signed.signature : null)
-          : (data.txSignature || null)
-      }
-    }
-  } catch (err) {
-    reportError(err, { context: 'submitDcaBuy', strategyId: strategy.id })
+  // DCA goes through the shared pipeline now — same validate → decode →
+  // whitelist → preflight → signAndSend sequence as market trades. The
+  // legacy impl skipped preflight; standardizing here is fine because
+  // an invalid DCA buy should fail loudly, not silently retry.
+  const result = await runOrderPipeline({
+    inputMint: USDC_MINT,
+    outputMint,
+    amountLamports,
+    userPublicKey: address,
+    idempotencyPrefix: 'dca',
+    provider,
+    preflight: true,
+    broadcast: 'send',
+  })
+  if (result.ok) {
+    txSigned = true
+    txSignature = result.signature
+  } else {
+    reportError(new Error(result.error), { context: 'submitDcaBuy', strategyId: strategy.id })
   }
 
   if (!txSigned && !ALLOW_SIMULATED_FILLS) {

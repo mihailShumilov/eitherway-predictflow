@@ -1,0 +1,8 @@
+# Local-dev overrides for `wrangler dev`. Copy to `.dev.vars` (gitignored)
+# and fill in values. NEVER commit `.dev.vars` — it holds production-grade
+# secrets even in local mode.
+
+SIGNED_TX_KEY="<base64 32-byte key — `openssl rand -base64 32`>"
+SESSION_SIGNING_KEY="<base64 32-byte key — `openssl rand -base64 32`>"
+DFLOW_API_KEY="<dflow production api key>"
+HELIUS_RPC_URL="https://mainnet.helius-rpc.com/?api-key=<helius-key>"

@@ -5,7 +5,11 @@
 
 export function shouldTriggerOrder(order, currentSidePrice) {
   if (order == null || currentSidePrice == null) return false
-  if (order.status !== 'pending') return false
+  // Accept both `pending` and `armed`. The keeper-backed flow uses
+  // `armed` after the trigger fires while submission is in flight, and
+  // re-evaluates on transient submission failure. Without `armed` here
+  // the legacy frontend trigger loop would silently skip the retry.
+  if (order.status !== 'pending' && order.status !== 'armed') return false
   switch (order.orderType) {
     case 'limit':
     case 'stop-loss':

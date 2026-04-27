@@ -121,6 +121,47 @@ function dflowKycCheckDevPlugin({ upstream, orderUpstream, authHeaders }) {
   }
 }
 
+// Dev-only mirror of functions/api/rpc.js — proxies POSTs to the configured
+// Solana RPC (HELIUS_RPC_URL) so the browser hits a same-origin path. Lets
+// us use Helius keys that have an Origin allowlist (you can't allowlist
+// localhost from their dashboard) and keeps the api-key out of the bundle.
+function solanaRpcDevPlugin({ rpcUrl }) {
+  return {
+    name: 'predictflow:solana-rpc-dev',
+    configureServer(server) {
+      server.middlewares.use('/api/rpc', async (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          return res.end('Method Not Allowed')
+        }
+        if (!rpcUrl) {
+          res.statusCode = 500
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          return res.end(JSON.stringify({ error: 'HELIUS_RPC_URL not set in env' }))
+        }
+        const chunks = []
+        for await (const ch of req) chunks.push(ch)
+        const body = Buffer.concat(chunks)
+        try {
+          const upstream = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body,
+          })
+          const buf = Buffer.from(await upstream.arrayBuffer())
+          res.statusCode = upstream.status
+          res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json')
+          res.end(buf)
+        } catch (err) {
+          res.statusCode = 502
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ error: 'upstream failed', detail: String(err?.message || err) }))
+        }
+      })
+    },
+  }
+}
+
 // Dev-only mirror of functions/api/dflow-series-categories.js — fetches the
 // heavy upstream /api/v1/series once per process and serves the slim
 // ticker→category lookup. In prod the Cloudflare Pages Function handles this.
@@ -193,6 +234,7 @@ export default defineConfig(({ mode }) => {
       excludeDevScriptsPlugin(),
       dflowSeriesCategoriesDevPlugin({ upstream, authHeaders }),
       dflowKycCheckDevPlugin({ upstream, orderUpstream, authHeaders }),
+      solanaRpcDevPlugin({ rpcUrl: env.HELIUS_RPC_URL || env.SOLANA_RPC_URL }),
     ],
     server: {
       watch: {

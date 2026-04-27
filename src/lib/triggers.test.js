@@ -21,9 +21,13 @@ describe('shouldTriggerOrder', () => {
     expect(shouldTriggerOrder({ ...base, orderType: 'take-profit', triggerPrice: 0.7 }, 0.69)).toBe(false)
   })
 
-  it('does not fire when order is not pending', () => {
+  it('does not fire when order is not pending or armed', () => {
     expect(shouldTriggerOrder({ ...base, orderType: 'limit', status: 'filled' }, 0.1)).toBe(false)
     expect(shouldTriggerOrder({ ...base, orderType: 'limit', status: 'cancelled' }, 0.1)).toBe(false)
+  })
+
+  it('fires on armed status (re-evaluation after transient submit failure)', () => {
+    expect(shouldTriggerOrder({ ...base, orderType: 'limit', status: 'armed' }, 0.39)).toBe(true)
   })
 
   it('returns false on null inputs', () => {
