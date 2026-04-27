@@ -101,6 +101,11 @@ function buildPositionsFromLocal(localPositions) {
         source: 'local',
         mint: null,
         marketId: p.marketId,
+        // Persisted by recordTradeOutcome — used by enrichLocalSettled to
+        // resolve win/loss exactly. Older positions won't have these.
+        ticker: p.ticker || null,
+        eventTicker: p.eventTicker || null,
+        seriesTicker: p.seriesTicker || null,
         question: p.question,
         eventTitle: p.eventTitle,
         category: p.category,
@@ -199,6 +204,20 @@ async function enrichLocalSettled(positions, dflowBase) {
   const resolved = new Map() // position object → 'yes' | 'no'
   for (const p of targets) {
     try {
+      // Fast path: positions written after the ticker-persistence change
+      // carry ticker + seriesTicker, so we can skip the search step and
+      // look up the market exactly. Eliminates the scalar-market ambiguity
+      // (multiple markets sharing a title) entirely.
+      if (p.ticker && p.seriesTicker) {
+        const markets = await fetchSeriesMarkets(p.seriesTicker)
+        const exact = markets.find(m => m.ticker === p.ticker)
+        if (exact) {
+          const result = (exact.result || '').toString().toLowerCase()
+          if (result === 'yes' || result === 'no') resolved.set(p, result)
+          continue
+        }
+      }
+
       const eventTitle = p.eventTitle || p.question || ''
       const events = await searchEvents(eventTitle)
       const eventTitleNorm = normTitle(eventTitle)

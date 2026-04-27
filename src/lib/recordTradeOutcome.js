@@ -63,6 +63,21 @@ export function recordTradeOutcome({
 
   appendPosition({
     ...order,
+    // Stable on-chain identifiers — the synthesized `marketId` may
+    // not survive across page loads, so persist the Kalshi ticker and
+    // outcome mints. usePortfolio uses these to resolve win/loss for
+    // settled positions even when they're rendered via the local
+    // fallback (no on-chain wallet match).
+    ticker: market.ticker || null,
+    eventTicker: market.eventTicker || null,
+    seriesTicker: market.seriesTicker || null,
+    yesMint: market.yesMint || null,
+    noMint: market.noMint || null,
+    // Subtitle disambiguates scalar markets (e.g. score thresholds) that
+    // share an identical question text across an event.
+    subtitle: market.subtitle || null,
+    yesSubTitle: market.yesSubTitle || null,
+    noSubTitle: market.noSubTitle || null,
     question: market.question,
     eventTitle: market.eventTitle,
     category: market.category,

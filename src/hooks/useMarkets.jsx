@@ -105,6 +105,7 @@ export function MarketsProvider({ children }) {
         return {
         id: evt.id || `live-${i}`,
         ticker: evt.ticker || evt.eventTicker || evt.event_ticker || evt.slug || evt.id || `live-${i}`,
+        seriesTicker: seriesTicker || null,
         title: evt.title || evt.name || evt.question || 'Untitled Event',
         category: evt.category || seriesCategory || tags[0] || 'Other',
         subcategory: evt.subcategory || tags[0] || '',

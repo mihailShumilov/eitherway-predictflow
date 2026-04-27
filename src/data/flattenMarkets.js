@@ -12,6 +12,7 @@ export function flattenMarkets(events) {
         eventTitle: event.title,
         eventId: event.id,
         eventTicker: event.ticker || event.id,
+        seriesTicker: event.seriesTicker || null,
         category: event.category,
         subcategory: event.subcategory,
         tags: event.tags || [],
