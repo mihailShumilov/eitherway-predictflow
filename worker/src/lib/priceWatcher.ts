@@ -164,11 +164,15 @@ export class PriceWatcher implements DurableObject {
     }
     const topYesBid = maxKey(body.yes_bids)
     const topNoBid = maxKey(body.no_bids)
+    // Round to 4 decimals — matches DFlow's WS price precision and avoids
+    // float artifacts like `1 - 0.94 = 0.06000000000000005` slipping past
+    // a `<=` trigger that should match.
+    const round4 = (v: number | null) => v == null ? null : Math.round(v * 1e4) / 1e4
     const prices: Prices = {
-      yesBid: topYesBid,
-      yesAsk: topNoBid != null ? 1 - topNoBid : null,
-      noBid: topNoBid,
-      noAsk: topYesBid != null ? 1 - topYesBid : null,
+      yesBid: round4(topYesBid),
+      yesAsk: round4(topNoBid != null ? 1 - topNoBid : null),
+      noBid: round4(topNoBid),
+      noAsk: round4(topYesBid != null ? 1 - topYesBid : null),
     }
     if (prices.yesAsk == null && prices.yesBid == null && prices.noAsk == null && prices.noBid == null) return null
     return prices

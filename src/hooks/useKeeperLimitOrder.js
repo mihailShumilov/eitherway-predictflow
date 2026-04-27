@@ -218,6 +218,14 @@ export function useKeeperLimitOrder() {
       // execute against whatever the book looks like at fire time.
       slippageBps: 'auto',
       priceImpactTolerancePct: 10,
+      // Embed a non-trivial priority fee in the swap. Without this, the
+      // signed tx has no incentive for leaders to include under congestion,
+      // and txs sit accepted-by-Helius but never land — solscan reports
+      // "not found" forever. DFlow's `/order` translates this into a
+      // SetComputeUnitPrice instruction the user pre-signs. 100k lamports
+      // (~$0.000015 today) is the lower-middle of the typical Solana priority
+      // fee range and reliable enough for non-bot trading volumes.
+      prioritizationFeeLamports: 100000,
     })
     if (!result.ok) throw new Error(result.error)
 

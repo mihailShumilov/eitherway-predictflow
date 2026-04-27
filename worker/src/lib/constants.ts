@@ -23,7 +23,11 @@ export const CONFIRMATION_MAX_MS = 60_000
 // before inclusion in any block, leaving Helius's getSignatureStatuses
 // returning null forever. We give up and mark the order failed so the
 // row stops polling and the UI reflects reality.
-export const CONFIRMATION_GIVE_UP_MS = 120_000
+//
+// Sized to give the keeper's `maxRetries: 5` (each ~30s) a full window:
+// 5 × 30s = 150s for rebroadcast + 60s for the confirmed leader to
+// include + slot finality.
+export const CONFIRMATION_GIVE_UP_MS = 240_000
 
 // Solana tx packet hard cap is 1232 bytes; reject anything materially
 // larger as obvious garbage.

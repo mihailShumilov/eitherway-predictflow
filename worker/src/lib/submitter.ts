@@ -236,7 +236,15 @@ async function sendRawTransaction(env: Env, bytes: Uint8Array): Promise<SendResu
         jsonrpc: '2.0',
         id: 1,
         method: 'sendTransaction',
-        params: [b64, { encoding: 'base64', skipPreflight: true, maxRetries: 0 }],
+        // maxRetries: 5 — Helius will rebroadcast up to 5 times if the
+        // leader doesn't include the tx within ~30s of each send. Without
+        // retries, low-priority txs that get dropped under congestion stay
+        // dropped forever and surface as "not found" on solscan even though
+        // the signature is valid. We pair this with the priority fee
+        // embedded by DFlow's /order so each rebroadcast is increasingly
+        // likely to land. Durable nonces guarantee no double-spend across
+        // retries — at most one inclusion can advance the nonce.
+        params: [b64, { encoding: 'base64', skipPreflight: true, maxRetries: 5 }],
       }),
     })
   } catch (err) {

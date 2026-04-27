@@ -42,6 +42,7 @@ import { DFLOW_ORDER_URL } from '../config/env'
  * @param {'send'|'sign-only'} [opts.broadcast] - 'send' calls signAndSendTransaction; 'sign-only' returns the signed tx unsent (keeper flow)
  * @param {number|string} [opts.slippageBps]  - DFlow `slippageBps`. Number for explicit bps, or "auto" for DFlow auto-routing
  * @param {number} [opts.priceImpactTolerancePct] - DFlow `priceImpactTolerancePct` (0-100)
+ * @param {number} [opts.prioritizationFeeLamports] - DFlow `prioritizationFeeLamports` — embedded as a SetComputeUnitPrice instruction so leaders include the tx under congestion
  *
  * @returns {Promise<
  *     | { ok: true, decodedTx, signedTx?, signature?: string, txSigned: boolean }
@@ -53,7 +54,7 @@ export async function runOrderPipeline(opts) {
     inputMint, outputMint, amountLamports, userPublicKey,
     idempotencyPrefix = 'ord',
     provider, preflight = true, broadcast = 'send',
-    slippageBps, priceImpactTolerancePct,
+    slippageBps, priceImpactTolerancePct, prioritizationFeeLamports,
   } = opts
 
   if (!provider) return { ok: false, retryable: true, error: 'No wallet provider' }
@@ -75,6 +76,9 @@ export async function runOrderPipeline(opts) {
     if (slippageBps != null) params.push(`slippageBps=${encodeURIComponent(slippageBps)}`)
     if (priceImpactTolerancePct != null) {
       params.push(`priceImpactTolerancePct=${encodeURIComponent(priceImpactTolerancePct)}`)
+    }
+    if (prioritizationFeeLamports != null) {
+      params.push(`prioritizationFeeLamports=${encodeURIComponent(prioritizationFeeLamports)}`)
     }
     const url = `${DFLOW_ORDER_URL}?${params.join('&')}`
     const res = await fetchWithRetry(url, {
