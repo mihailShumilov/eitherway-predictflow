@@ -219,23 +219,36 @@ async function enrichLocalSettled(positions, dflowBase) {
         const matches = markets.filter(m => normTitle(m.title) === questionNorm)
         if (matches.length === 0) continue
 
-        // When multiple markets share the title (e.g. weekly recurrences),
-        // prefer the one whose closeTime is closest to what the user
-        // stored at trade time. With no closeTime, fall back to the first.
-        let best = matches[0]
-        if (matches.length > 1 && userCloseMs != null) {
-          let bestDelta = Infinity
-          for (const m of matches) {
-            const mMs = toMs(m.closeTime)
-            if (mMs == null) continue
-            const delta = Math.abs(mMs - userCloseMs)
-            if (delta < bestDelta) {
-              bestDelta = delta
-              best = m
-            }
-          }
+        // Disambiguate by closeTime — weekly series reuse the same title
+        // across recurrences, so the right market is the one whose close
+        // matches what the user stored at trade time.
+        if (matches.length === 1) {
+          pick = matches[0]
+          break
         }
-        pick = best
+        if (userCloseMs == null) {
+          // Multiple matches and no anchor to pick between them — bail
+          // rather than guess. Common for scalar markets (Rotten Tomatoes,
+          // sports score thresholds) where many markets share both title
+          // AND closeTime, and the user's local entry doesn't carry the
+          // subtitle that disambiguates them.
+          continue
+        }
+        // Need a closeTime gap that's clearly smaller than the gap to
+        // any sibling — otherwise we're guessing. Require the second-best
+        // candidate to be at least 10 minutes further away than the best.
+        const ranked = matches
+          .map(m => ({ m, delta: Math.abs((toMs(m.closeTime) ?? Infinity) - userCloseMs) }))
+          .filter(x => Number.isFinite(x.delta))
+          .sort((a, b) => a.delta - b.delta)
+        if (ranked.length === 0) continue
+        if (ranked.length >= 2 && (ranked[1].delta - ranked[0].delta) < 10 * 60 * 1000) {
+          // Ambiguous — multiple markets equidistant from user's stored
+          // closeTime. Leave unresolved (UI will keep the gray "Settled"
+          // badge) rather than misreport a win/loss.
+          continue
+        }
+        pick = ranked[0].m
         if (pick) break
       }
 
