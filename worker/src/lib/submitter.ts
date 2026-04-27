@@ -104,14 +104,21 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
   }
 
   await incr(env, 'submit_attempted', { marketTicker: row.market_ticker })
-  // One-time diagnostic dump of the signed tx as base64 so we can decode it
-  // locally and verify the wallet didn't reorder the durable-nonce
-  // advanceNonceAccount instruction off position 0. Remove once verified.
   console.log('submit_order_attempt', {
     id: orderId,
     marketTicker: row.market_ticker,
     txBytes: signedBytes.length,
-    txBase64: bytesToBase64(signedBytes),
+  })
+  // One-time diagnostic dump of the signed tx as base64 so we can decode it
+  // locally and verify the wallet didn't reorder the durable-nonce
+  // advanceNonceAccount instruction off position 0. Stored in the audit log
+  // (wrangler tail truncates ~1KB log lines, dropping the bytes inline).
+  // Remove once verified.
+  await audit(env, {
+    wallet: row.wallet,
+    orderId: row.id,
+    event: 'submit.tx_dump',
+    detail: { txBase64: bytesToBase64(signedBytes), txBytes: signedBytes.length },
   })
   const sigResult = await sendRawTransaction(env, signedBytes)
   if (!sigResult.ok) {
