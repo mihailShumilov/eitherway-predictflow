@@ -48,7 +48,9 @@ DFLOW_TRADE_BASE = "https://quote-api.dflow.net"
 DFLOW_WS_URL = "wss://prediction-markets-api.dflow.net/api/v1/ws"
 SOLANA_NETWORK = "mainnet"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-ALLOWED_ORIGIN = "http://localhost:5173"
+# Comma-separated allowlist. Reflected back as access-control-allow-origin
+# only when the request's Origin exactly matches one of these.
+ALLOWED_ORIGIN = "http://localhost:5173,http://localhost:4173"
 SESSION_TTL_SECONDS = "604800"
 
 # Production environment.
@@ -76,5 +78,6 @@ DFLOW_TRADE_BASE = "https://quote-api.dflow.net"
 DFLOW_WS_URL = "wss://prediction-markets-api.dflow.net/api/v1/ws"
 SOLANA_NETWORK = "mainnet"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-ALLOWED_ORIGIN = "https://predictflow.app"
+ALLOWED_ORIGIN = "https://app.predictflow.org,https://predictflow.app"
 SESSION_TTL_SECONDS = "604800"
+

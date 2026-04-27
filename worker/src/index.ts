@@ -16,17 +16,19 @@ import ordersRoutes from './routes/orders'
 import noncesRoutes from './routes/durable-nonces'
 import { requireSession } from './middleware/auth'
 import { bytesToHex, randomBytes } from './lib/crypto'
+import { parseAllowlist, matchAllowedOrigin } from './lib/origin'
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
-// CORS — only allow the configured frontend origin. The credentials flag is
-// false by default since we use Authorization headers, not cookies, so
-// browsers don't need to pre-flight credentials.
+// CORS — only allow configured frontend origins. ALLOWED_ORIGIN may be a
+// single value or a comma-separated allowlist (e.g. preview + prod + local
+// dev). The credentials flag is false by default since we use Authorization
+// headers, not cookies, so browsers don't need to pre-flight credentials.
 app.use('*', async (c, next) => {
-  const origin = c.req.header('origin')
-  const allow = c.env.ALLOWED_ORIGIN
-  if (origin && origin === allow) {
-    c.header('access-control-allow-origin', origin)
+  const allowList = parseAllowlist(c.env.ALLOWED_ORIGIN)
+  const matched = matchAllowedOrigin(c.req.header('origin'), allowList)
+  if (matched) {
+    c.header('access-control-allow-origin', matched)
     c.header('vary', 'origin')
   }
   c.header('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS')

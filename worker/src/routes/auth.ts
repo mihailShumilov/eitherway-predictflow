@@ -8,6 +8,7 @@ import { audit } from '../lib/audit'
 import { apiError } from '../lib/errors'
 import { sha256 } from '@noble/hashes/sha256'
 import { bytesToHex } from '../lib/crypto'
+import { parseAllowlist, matchAllowedOrigin } from '../lib/origin'
 
 // Audit logs persist forever. Logging the raw `sid` would mean a future
 // read-only D1 leak hands an attacker every active session id — combined
@@ -30,24 +31,34 @@ auth.post('/challenge', async (c) => {
     return apiError(c, 400, 'invalid_wallet')
   }
 
-  // Pin both `domain` and `uri` to ALLOWED_ORIGIN — the wallet's SIWS
-  // prompt renders `domain` prominently, so deriving it from the request's
-  // Host header would let a phishing site that proxies the worker via a
-  // different hostname display its own domain to the user. The user's
-  // signature would then verify against the attacker's stored message and
-  // could be replayed against the legitimate worker.
+  // Pin both `domain` and `uri` to the request's Origin, but ONLY after
+  // verifying it matches the configured allowlist. The wallet's SIWS prompt
+  // renders `domain` prominently, so deriving it from an unverified Host
+  // header would let a phishing site that proxies the worker via a different
+  // hostname display its own domain to the user. The user's signature would
+  // then verify against the attacker's stored message and could be replayed
+  // against the legitimate worker. Resolving via the allowlist keeps the same
+  // guarantee while supporting multiple legitimate frontends (prod + preview).
+  const allowList = parseAllowlist(c.env.ALLOWED_ORIGIN)
+  if (allowList.length === 0) {
+    return apiError(c, 500, 'server_misconfigured', 'ALLOWED_ORIGIN is empty')
+  }
+  const requestOrigin = matchAllowedOrigin(c.req.header('origin'), allowList)
+  if (!requestOrigin) {
+    return apiError(c, 403, 'origin_not_allowed', 'Request origin is not in the allowlist')
+  }
   let allowedHost: string
   try {
-    allowedHost = new URL(c.env.ALLOWED_ORIGIN).host
+    allowedHost = new URL(requestOrigin).host
   } catch {
-    return apiError(c, 500, 'server_misconfigured', 'ALLOWED_ORIGIN is not a valid URL')
+    return apiError(c, 500, 'server_misconfigured', 'ALLOWED_ORIGIN entry is not a valid URL')
   }
   let challenge
   try {
     challenge = await createChallenge({
       db: c.env.DB,
       domain: allowedHost,
-      uri: c.env.ALLOWED_ORIGIN,
+      uri: requestOrigin,
       chainId: c.env.SOLANA_NETWORK,
       wallet,
     })
