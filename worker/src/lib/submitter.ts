@@ -102,8 +102,10 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
   }
 
   await incr(env, 'submit_attempted', { marketTicker: row.market_ticker })
+  console.log('submit_order_attempt', { id: orderId, marketTicker: row.market_ticker, txBytes: signedBytes.length })
   const sigResult = await sendRawTransaction(env, signedBytes)
   if (!sigResult.ok) {
+    console.error('submit_order_send_failed', { id: orderId, permanent: sigResult.permanent, error: sigResult.error })
     if (sigResult.permanent) {
       await markFailed(env, row, sigResult.error)
       await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: sigResult.error })
@@ -129,6 +131,7 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
     .prepare(`UPDATE orders SET fill_signature = ?, updated_at = ? WHERE id = ?`)
     .bind(sigResult.signature, Date.now(), orderId)
     .run()
+  console.log('submit_order_broadcast', { id: orderId, signature: sigResult.signature })
   await audit(env, {
     wallet: row.wallet,
     orderId: row.id,

@@ -118,9 +118,60 @@ export class PriceWatcher implements DurableObject {
 
   private async runEval(): Promise<void> {
     if (!this.marketTicker) return
-    const cur = await this.state.storage.get<Prices>('lastPrice')
+    let cur = await this.state.storage.get<Prices>('lastPrice')
+    // WS is event-driven — DFlow's `prices` channel only emits on best
+    // bid/ask changes. In quiet markets the keeper can sit waiting for a
+    // tick that never comes, leaving lastPrice null. Fall back to a REST
+    // snapshot so triggers still evaluate against the current book.
+    if (!cur) {
+      const snap = await this.fetchOrderbookSnapshot(this.marketTicker).catch((err) => {
+        console.error('price_watcher_orderbook_snapshot_failed', { error: String(err), market: this.marketTicker })
+        return null
+      })
+      if (snap) {
+        cur = snap
+        await this.state.storage.put('lastPrice', snap).catch(() => {})
+      }
+    }
+    console.log('price_watcher_runEval', {
+      market: this.marketTicker,
+      hasLastPrice: !!cur,
+      yesAsk: cur?.yesAsk ?? null,
+      yesBid: cur?.yesBid ?? null,
+      wsOpen: this.ws?.readyState === WebSocket.OPEN,
+    })
     if (!cur) return
     await evaluateAll(this.env, this.marketTicker, cur)
+  }
+
+  private async fetchOrderbookSnapshot(ticker: string): Promise<Prices | null> {
+    const url = `${this.env.DFLOW_REST_BASE}/api/v1/orderbook/${encodeURIComponent(ticker)}`
+    const res = await fetch(url, { headers: { 'x-api-key': this.env.DFLOW_API_KEY } })
+    if (!res.ok) {
+      console.error('price_watcher_orderbook_http_error', { market: ticker, status: res.status })
+      return null
+    }
+    const body = await res.json<{ yes_bids?: Record<string, number>; no_bids?: Record<string, number> }>().catch(() => null)
+    if (!body) return null
+    const maxKey = (m?: Record<string, number>): number | null => {
+      if (!m) return null
+      let best = -Infinity
+      for (const k of Object.keys(m)) {
+        const n = parseFloat(k)
+        if (Number.isFinite(n) && n > best) best = n
+      }
+      return Number.isFinite(best) ? best : null
+    }
+    const topYesBid = maxKey(body.yes_bids)
+    const topNoBid = maxKey(body.no_bids)
+    const prices: Prices = {
+      yesBid: topYesBid,
+      yesAsk: topNoBid != null ? 1 - topNoBid : null,
+      noBid: topNoBid,
+      noAsk: topYesBid != null ? 1 - topYesBid : null,
+    }
+    if (prices.yesAsk == null && prices.yesBid == null && prices.noAsk == null && prices.noBid == null) return null
+    return prices
   }
 
   private async maybeOpen(): Promise<void> {
@@ -133,7 +184,16 @@ export class PriceWatcher implements DurableObject {
       // Cloudflare Workers WebSocket fetch upgrade. The `x-api-key` header
       // is set on the upgrade request — exactly what browsers can't do
       // and the reason this code lives in the worker, not the frontend.
-      const upstream = await fetch(this.env.DFLOW_WS_URL, {
+      //
+      // Workers' fetch() rejects `wss://`/`ws://` schemes ("Fetch API cannot
+      // load") — the upgrade has to use `https://`/`http://` and rely on the
+      // `Upgrade: websocket` header to negotiate the protocol switch. We keep
+      // DFLOW_WS_URL stored as `wss://` because it's the canonical form for
+      // every other consumer (docs, browser env), and translate here.
+      const upgradeUrl = this.env.DFLOW_WS_URL
+        .replace(/^wss:\/\//i, 'https://')
+        .replace(/^ws:\/\//i, 'http://')
+      const upstream = await fetch(upgradeUrl, {
         headers: {
           Upgrade: 'websocket',
           'x-api-key': this.env.DFLOW_API_KEY,
@@ -153,11 +213,17 @@ export class PriceWatcher implements DurableObject {
       sock.addEventListener('close', () => this.onClose())
       sock.addEventListener('error', () => this.onClose())
 
-      sock.send(JSON.stringify({
+      const subPayload = {
         type: 'subscribe',
         channel: 'prices',
         tickers: [this.marketTicker],
-      }))
+      }
+      sock.send(JSON.stringify(subPayload))
+      console.log('price_watcher_ws_opened', {
+        market: this.marketTicker,
+        upstreamStatus: upstream.status,
+        subscribe: subPayload,
+      })
 
       // Schedule the safety alarm.
       await this.state.storage.setAlarm(Date.now() + ALARM_REEVAL_MS)
@@ -173,6 +239,14 @@ export class PriceWatcher implements DurableObject {
     this.lastMessageAt = Date.now()
     let msg: any
     try { msg = JSON.parse(typeof event.data === 'string' ? event.data : '') } catch { return }
+    console.log('price_watcher_ws_message', {
+      market: this.marketTicker,
+      channel: msg?.channel,
+      type: msg?.type,
+      msg_market_ticker: msg?.market_ticker,
+      yes_ask: msg?.yes_ask,
+      yes_bid: msg?.yes_bid,
+    })
     if (!msg || msg.channel !== 'prices' || msg.market_ticker !== this.marketTicker) return
     const prices = pricesFromMessage(msg)
     if (!prices) return
