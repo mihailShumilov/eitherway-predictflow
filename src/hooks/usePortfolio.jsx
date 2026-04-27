@@ -118,74 +118,144 @@ function buildPositionsFromLocal(localPositions) {
     })
 }
 
+// Normalize titles for fuzzy comparison: lowercase, collapse whitespace,
+// strip quotes and punctuation that varies between display and API
+// payloads (e.g. "Michael" vs Michael).
+function normTitle(s) {
+  return (s || '').toString().toLowerCase().replace(/["'""''`]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+function toMs(t) {
+  if (t == null) return null
+  const n = typeof t === 'number' ? t : parseFloat(t)
+  if (!Number.isFinite(n)) return null
+  return n < 1e12 ? n * 1000 : n
+}
+
 // Best-effort win/loss enrichment for local-fallback positions whose
-// markets have already settled. We can't look these up by mint (local
-// entries don't store one), so we fall back to DFlow's search endpoint
-// and match on event title. Returns a new array with `won` and
-// `currentPrice` filled in for positions we could resolve; positions we
-// couldn't resolve are returned unchanged.
+// markets have already settled. Local entries don't store the outcome
+// mint or market ticker, so we resolve via DFlow's search + series
+// listing. Two-step lookup:
+//   1. /search?q=<event title> → matching events (with seriesTicker)
+//   2. /events?seriesTickers=<series>&withNestedMarkets=true → events
+//      with embedded markets, including each market's `result` field
+// Within the series response we find the specific market by title and
+// closeTime proximity to the user's stored closeTime.
+//
+// Most filters on /markets and /events?eventTickers are silently ignored
+// by DFlow, but seriesTickers IS honored — that's the leverage point.
+//
+// Returns a new array with `won` and `currentPrice` filled in for
+// positions we could resolve; unresolved positions are returned unchanged.
 async function enrichLocalSettled(positions, dflowBase) {
   const targets = positions.filter(p => p.settled && p.won === null && (p.eventTitle || p.question))
   if (targets.length === 0) return positions
 
-  // De-dupe queries by event/question — multiple positions on the same
-  // market only need one search.
-  const queryFor = p => (p.eventTitle || p.question || '').trim()
-  const queries = Array.from(new Set(targets.map(queryFor))).filter(Boolean)
+  // Cache per (seriesTicker → flat array of markets) so multiple
+  // positions in the same weekly/series only hit DFlow once.
+  const seriesCache = new Map()
+  // Cache search results by event title — the same eventTitle can back
+  // many positions (e.g. several "What will Trump say this week?" rows).
+  const searchCache = new Map()
 
-  const resolutions = new Map() // query → { wonSide, status }
-  await Promise.all(queries.map(async (q) => {
+  async function searchEvents(eventTitle) {
+    const key = normTitle(eventTitle)
+    if (searchCache.has(key)) return searchCache.get(key)
+    let events = []
     try {
-      const url = `${dflowBase}/api/v1/search?q=${encodeURIComponent(q)}`
+      const url = `${dflowBase}/api/v1/search?q=${encodeURIComponent(eventTitle)}`
       const res = await fetchWithRetry(url)
-      if (!res.ok) return
-      const payload = await res.json()
-      const events = payload?.events || payload?.data || []
-      const event = events.find(e => (e.title || '').trim().toLowerCase() === q.toLowerCase()) || events[0]
-      if (!event?.ticker) return
+      if (res.ok) {
+        const payload = await res.json()
+        events = payload?.events || []
+      }
+    } catch {}
+    searchCache.set(key, events)
+    return events
+  }
 
-      // Pull the resolved markets under that event. /markets is the only
-      // endpoint that consistently honors the eventTicker filter for our
-      // proxy; status=finalized narrows to determined markets.
-      const mUrl = `${dflowBase}/api/v1/markets?eventTicker=${encodeURIComponent(event.ticker)}&status=finalized&limit=50`
-      const mRes = await fetchWithRetry(mUrl)
-      if (!mRes.ok) return
-      const mPayload = await mRes.json()
-      const markets = mPayload?.markets || mPayload?.data || []
-      // Most events have one market, but some (e.g. multi-outcome) have
-      // several. Index by title so multi-position events still resolve.
-      for (const m of markets) {
-        const result = (m.result || '').toString().toLowerCase()
-        const wonSide = result === 'yes' ? 'yes' : result === 'no' ? 'no' : null
-        if (wonSide) {
-          const key = (m.title || event.title || '').trim().toLowerCase()
-          resolutions.set(key, { wonSide, status: m.status })
+  async function fetchSeriesMarkets(seriesTicker) {
+    if (seriesCache.has(seriesTicker)) return seriesCache.get(seriesTicker)
+    const flat = []
+    try {
+      const url = `${dflowBase}/api/v1/events?seriesTickers=${encodeURIComponent(seriesTicker)}&withNestedMarkets=true&limit=200`
+      const res = await fetchWithRetry(url)
+      if (res.ok) {
+        const payload = await res.json()
+        for (const e of (payload?.events || [])) {
+          for (const m of (e.markets || [])) {
+            flat.push({ ...m, _eventTicker: e.ticker })
+          }
         }
       }
-      // Also key by event title as a fallback for positions whose stored
-      // question matches the event title rather than the market title.
-      const eventKey = (event.title || '').trim().toLowerCase()
-      if (!resolutions.has(eventKey) && markets.length === 1) {
-        const m = markets[0]
-        const result = (m.result || '').toString().toLowerCase()
+    } catch {}
+    seriesCache.set(seriesTicker, flat)
+    return flat
+  }
+
+  // Resolve targets sequentially — the series cache gets reused across
+  // iterations, so doing this in parallel would just multiply requests
+  // for the same series before the cache lands.
+  const resolved = new Map() // position object → 'yes' | 'no'
+  for (const p of targets) {
+    try {
+      const eventTitle = p.eventTitle || p.question || ''
+      const events = await searchEvents(eventTitle)
+      const eventTitleNorm = normTitle(eventTitle)
+      // Prefer events whose title matches; fall back to all events
+      // matching the search if no exact title match is found.
+      const candidates = events.filter(e => normTitle(e.title) === eventTitleNorm)
+      const seriesTickers = Array.from(new Set(
+        (candidates.length ? candidates : events).map(e => e.seriesTicker).filter(Boolean)
+      ))
+      if (seriesTickers.length === 0) continue
+
+      const userCloseMs = toMs(p.closeTime)
+      const questionNorm = normTitle(p.question)
+
+      let pick = null
+      for (const seriesTicker of seriesTickers) {
+        const markets = await fetchSeriesMarkets(seriesTicker)
+        const matches = markets.filter(m => normTitle(m.title) === questionNorm)
+        if (matches.length === 0) continue
+
+        // When multiple markets share the title (e.g. weekly recurrences),
+        // prefer the one whose closeTime is closest to what the user
+        // stored at trade time. With no closeTime, fall back to the first.
+        let best = matches[0]
+        if (matches.length > 1 && userCloseMs != null) {
+          let bestDelta = Infinity
+          for (const m of matches) {
+            const mMs = toMs(m.closeTime)
+            if (mMs == null) continue
+            const delta = Math.abs(mMs - userCloseMs)
+            if (delta < bestDelta) {
+              bestDelta = delta
+              best = m
+            }
+          }
+        }
+        pick = best
+        if (pick) break
+      }
+
+      if (pick) {
+        const result = (pick.result || '').toString().toLowerCase()
         if (result === 'yes' || result === 'no') {
-          resolutions.set(eventKey, { wonSide: result, status: m.status })
+          resolved.set(p, result)
         }
       }
     } catch {
-      // best-effort: a missing/failed lookup just leaves won=null
+      // best-effort: ignore and leave won=null
     }
-  }))
+  }
 
-  if (resolutions.size === 0) return positions
+  if (resolved.size === 0) return positions
 
   return positions.map(p => {
-    if (!p.settled || p.won !== null) return p
-    const titleKey = (p.question || '').trim().toLowerCase()
-    const eventKey = (p.eventTitle || '').trim().toLowerCase()
-    const hit = resolutions.get(titleKey) || resolutions.get(eventKey)
-    if (!hit) return p
-    const won = hit.wonSide === p.side
+    const wonSide = resolved.get(p)
+    if (!wonSide) return p
+    const won = wonSide === p.side
     const perShare = won ? 1 : 0
     return {
       ...p,
