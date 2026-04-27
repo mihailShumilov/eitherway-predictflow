@@ -89,6 +89,51 @@ export function getPositions() {
   return Array.isArray(current) ? current : []
 }
 
+// Backfill stored positions with fields we couldn't capture at trade time
+// — Kalshi ticker, parent eventTicker/seriesTicker, scalar-market subtitle.
+// Matching is by composite key because positions written before the
+// idempotency-key change don't have a stable `id`.
+//
+// `updates` is an array of `{ match, fields }`:
+//   - `match`: { question, closeTime, side, price, shares }
+//   - `fields`: shape that gets shallow-merged onto matching positions
+//
+// Idempotent: only fills fields that aren't already present, so re-running
+// the migration over already-enriched positions is a no-op.
+export function backfillPositionFields(updates) {
+  if (!Array.isArray(updates) || updates.length === 0) return 0
+  return withPositionsLock(() => {
+    const current = safeGet('predictflow_positions', [])
+    const arr = Array.isArray(current) ? current : []
+    let touched = 0
+    const next = arr.map(p => {
+      const u = updates.find(({ match }) =>
+        p.question === match.question
+        && p.closeTime === match.closeTime
+        && p.side === match.side
+        && Number(p.price) === Number(match.price)
+        && Number(p.shares) === Number(match.shares)
+      )
+      if (!u) return p
+      let changed = false
+      const merged = { ...p }
+      for (const [k, v] of Object.entries(u.fields || {})) {
+        if (v != null && merged[k] == null) {
+          merged[k] = v
+          changed = true
+        }
+      }
+      if (changed) touched++
+      return merged
+    })
+    if (touched > 0) {
+      safeSet('predictflow_positions', next)
+      bumpPositionsVersion()
+    }
+    return touched
+  })
+}
+
 // Monotonic version counter bumped on every append so components that need
 // "did positions change?" can subscribe without re-reading storage.
 let positionsVersion = 0

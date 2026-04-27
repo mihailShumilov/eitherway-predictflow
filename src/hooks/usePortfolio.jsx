@@ -5,6 +5,7 @@ import { fetchWithRetry } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
 import { normalizeMarket } from '../lib/normalize'
 import { buildOnchainEntries } from '../lib/onchainEntries'
+import { backfillPositionFields } from '../lib/storage'
 
 const DFLOW_BASE = DFLOW_PROXY_BASE
 const SOLANA_RPCS = SOLANA_RPC_ENDPOINTS
@@ -202,6 +203,10 @@ async function enrichLocalSettled(positions, dflowBase) {
   // iterations, so doing this in parallel would just multiply requests
   // for the same series before the cache lands.
   const resolved = new Map() // position object → 'yes' | 'no'
+  // Collect ticker/series/subtitle metadata for positions we resolved by
+  // search — we'll write these back to localStorage so subsequent loads
+  // hit the ticker fast-path instead of re-searching.
+  const backfills = []
   for (const p of targets) {
     try {
       // Fast path: positions written after the ticker-persistence change
@@ -275,11 +280,38 @@ async function enrichLocalSettled(positions, dflowBase) {
         const result = (pick.result || '').toString().toLowerCase()
         if (result === 'yes' || result === 'no') {
           resolved.set(p, result)
+          // Backfill ticker fields onto the matching localStorage entry
+          // so the next portfolio load uses the ticker fast-path.
+          if (!p.ticker) {
+            backfills.push({
+              match: {
+                question: p.question,
+                closeTime: p.closeTime,
+                side: p.side,
+                price: p.entryPrice,
+                shares: p.shares,
+              },
+              fields: {
+                ticker: pick.ticker || null,
+                eventTicker: pick._eventTicker || null,
+                seriesTicker: seriesTickers[0] || null,
+                subtitle: pick.subtitle || null,
+                yesSubTitle: pick.yesSubTitle || null,
+                noSubTitle: pick.noSubTitle || null,
+              },
+            })
+          }
         }
       }
     } catch {
       // best-effort: ignore and leave won=null
     }
+  }
+
+  // Fire-and-forget backfill — the lock inside backfillPositionFields
+  // serializes against any concurrent appendPosition call.
+  if (backfills.length > 0) {
+    Promise.resolve(backfillPositionFields(backfills)).catch(() => {})
   }
 
   if (resolved.size === 0) return positions
