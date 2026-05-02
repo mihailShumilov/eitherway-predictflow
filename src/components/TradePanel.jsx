@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { useKeeperOrders } from '../hooks/useKeeperOrders'
 import { useDCA } from '../hooks/useDCA'
 import { useUsdcBalance } from '../hooks/useUsdcBalance'
 import { useKyc } from '../hooks/useKyc'
@@ -23,7 +24,7 @@ import ResultBanner from './trade/ResultBanner'
 import FeeBreakdown from './monetization/FeeBreakdown'
 import UpgradeNudge from './monetization/UpgradeNudge'
 
-function hasPosition(marketId) {
+function hasLocalPosition(marketId) {
   return getPositions().some(p => p.marketId === marketId && p.status === 'filled')
 }
 
@@ -31,6 +32,11 @@ export default function TradePanel({ market }) {
   const { connected, address } = useWallet()
   const { strategiesForMarket, stopStrategy } = useDCA()
   const { pendingOrders } = useConditionalOrders()
+  // Keeper-fired orders count as positions for the SL/TP gating below —
+  // they don't write to localStorage (server-side flow), so without this
+  // hook the SL/TP tabs would stay hidden after a successful keeper fire
+  // even though the user holds outcome tokens on chain.
+  const { orders: keeperOrders } = useKeeperOrders()
   const { balance: usdcBalance } = useUsdcBalance(address)
   const { verified: kycVerified, setShowModal: openKycModal } = useKyc()
   const { tier } = useUserTier()
@@ -48,7 +54,22 @@ export default function TradePanel({ market }) {
   const closeMs = market.closeTime ? new Date(market.closeTime).getTime() : NaN
   const isClosed = Number.isFinite(closeMs) && closeMs <= Date.now()
   const positionsVersion = useSyncExternalStore(subscribePositions, getPositionsVersion, () => 0)
-  const hasPos = useMemo(() => hasPosition(market.id), [market.id, positionsVersion])
+  // hasPos drives whether the Stop-Loss and Take-Profit tabs render.
+  // Sources of truth, in order:
+  //   1. localStorage positions (frontend-fired market trades)
+  //   2. keeper orders with status='filled' on this market (server-fired
+  //      conditional orders — these don't touch localStorage so without
+  //      this check, a successful keeper fire wouldn't unlock SL/TP).
+  const hasKeeperFilled = useMemo(
+    () => keeperOrders.some(o => o.status === 'filled' && (
+      (market.id && o.marketId === market.id) || (market.ticker && o.marketTicker === market.ticker)
+    )),
+    [market.id, market.ticker, keeperOrders],
+  )
+  const hasPos = useMemo(
+    () => hasLocalPosition(market.id) || hasKeeperFilled,
+    [market.id, positionsVersion, hasKeeperFilled],
+  )
 
   const price = side === 'yes' ? market.yesAsk : market.noAsk
   const amountNum = parseFloat(amount) || 0
