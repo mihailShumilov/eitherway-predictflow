@@ -154,7 +154,17 @@ function toMs(t) {
 // Returns a new array with `won` and `currentPrice` filled in for
 // positions we could resolve; unresolved positions are returned unchanged.
 async function enrichLocalSettled(positions, dflowBase) {
-  const targets = positions.filter(p => p.settled && p.won === null && (p.eventTitle || p.question))
+  // Two reasons to enrich a position:
+  //   1. settled + outcome unknown — we want to discover win/loss via DFlow.
+  //   2. ticker missing — we want to enable click-to-open in the portfolio
+  //      table even when /market/by-mint or the original trade record didn't
+  //      give us a ticker.
+  // The same DFlow search/series machinery handles both — discovering the
+  // matching market gives us BOTH the result field and the ticker.
+  const targets = positions.filter(p =>
+    (p.eventTitle || p.question) &&
+    ((p.settled && p.won === null) || !p.ticker),
+  )
   if (targets.length === 0) return positions
 
   // Cache per (seriesTicker → flat array of markets) so multiple
@@ -222,8 +232,14 @@ async function enrichLocalSettled(positions, dflowBase) {
         const exact = markets.find(m => m.ticker === p.ticker)
         if (exact) {
           const result = (exact.result || '').toString().toLowerCase()
-          if (result === 'yes' || result === 'no') {
-            resolved.set(p, { wonSide: result, ticker: p.ticker, eventTicker: p.eventTicker, seriesTicker: p.seriesTicker })
+          const wonSide = (result === 'yes' || result === 'no') ? result : null
+          if (wonSide || p.settled) {
+            resolved.set(p, {
+              wonSide,
+              ticker: p.ticker,
+              eventTicker: p.eventTicker,
+              seriesTicker: p.seriesTicker,
+            })
           }
           continue
         }
@@ -284,9 +300,15 @@ async function enrichLocalSettled(positions, dflowBase) {
 
       if (pick) {
         const result = (pick.result || '').toString().toLowerCase()
-        if (result === 'yes' || result === 'no') {
+        const wonSide = (result === 'yes' || result === 'no') ? result : null
+        // Always populate ticker context; populate wonSide only when DFlow
+        // gave us a clear yes/no result. An unsettled position still
+        // benefits from the ticker (for click-to-open) even without a
+        // result, and a settled-but-undetermined position still gets the
+        // ticker even though wonSide stays null.
+        if (wonSide || !p.ticker) {
           resolved.set(p, {
-            wonSide: result,
+            wonSide,
             ticker: pick.ticker || null,
             eventTicker: pick._eventTicker || null,
             seriesTicker: seriesTickers[0] || null,
@@ -330,6 +352,17 @@ async function enrichLocalSettled(positions, dflowBase) {
   return positions.map(p => {
     const r = resolved.get(p)
     if (!r) return p
+    // wonSide may be null when we discovered the ticker but DFlow hadn't
+    // published a result. In that case, leave win/loss + payout fields
+    // alone — only carry the ticker context forward.
+    if (r.wonSide == null) {
+      return {
+        ...p,
+        ticker: p.ticker || r.ticker || null,
+        eventTicker: p.eventTicker || r.eventTicker || null,
+        seriesTicker: p.seriesTicker || r.seriesTicker || null,
+      }
+    }
     const won = r.wonSide === p.side
     const perShare = won ? 1 : 0
     return {
@@ -474,6 +507,15 @@ export function usePortfolio() {
       } else {
         setPositions(clean)
         setSource('wallet')
+        // If any wallet position is missing a ticker (by-mint didn't return
+        // one, or DFlow's payload shape varied), kick off the same DFlow
+        // search/series discovery used for local positions so the rows
+        // become click-to-open in this render cycle.
+        if (clean.some(p => !p.ticker)) {
+          enrichLocalSettled(clean, DFLOW_BASE).then(enriched => {
+            if (enriched !== clean) setPositions(enriched)
+          })
+        }
       }
     } catch (err) {
       // Wallet RPC or outcome_mints unreachable — fall back to localStorage

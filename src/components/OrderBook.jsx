@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect } from 'react'
 import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { useKeeperOrders } from '../hooks/useKeeperOrders'
 
 const DFLOW_BASE = DFLOW_PROXY_BASE
 const ALLOW_MOCK_FALLBACK = (SOLANA_NETWORK || '').toLowerCase() !== 'mainnet'
@@ -38,14 +39,25 @@ function syntheticLevels(basePrice, side) {
   return rows
 }
 
+// Statuses where the order is still live and worth showing on the book.
+// `pending` is the steady state; `armed` / `submitting` are transient
+// states the keeper passes through right before broadcasting the swap.
+const LIVE_ORDER_STATUSES = new Set(['pending', 'armed', 'submitting'])
+
 // Bucket user limit orders into book-shaped levels for the YES-centric view.
 // YES limit BUY → YES bid at trigger.  NO limit BUY → YES ask at (1 - trigger).
 // (A NO buy is economically the same as offering YES for sale at 1-p.)
-function userLevelsForSide(orders, marketId, sideFilter) {
+//
+// Match by both marketId and marketTicker — keeper orders sometimes carry
+// only the ticker (server's primary key for orders) while older local
+// orders carry only the marketId.
+function userLevelsForSide(orders, { marketId, marketTicker }, sideFilter) {
   const buckets = new Map()
   for (const o of orders) {
-    if (o.marketId !== marketId) continue
-    if (o.status !== 'pending') continue
+    const idMatch = marketId && o.marketId === marketId
+    const tickerMatch = marketTicker && o.marketTicker === marketTicker
+    if (!idMatch && !tickerMatch) continue
+    if (!LIVE_ORDER_STATUSES.has(o.status)) continue
     if (o.orderType !== 'limit') continue
     if (o.side !== sideFilter) continue
     if (!Number.isFinite(o.triggerPrice) || o.triggerPrice <= 0) continue
@@ -88,7 +100,13 @@ function mergeLevels(bookLevels, userLevels, sort) {
 
 export default function OrderBook({ market }) {
   const [book, setBook] = useState({ bids: [], asks: [], synthetic: false, loaded: false })
-  const { orders } = useConditionalOrders()
+  const { orders: localOrders } = useConditionalOrders()
+  const { orders: keeperOrders } = useKeeperOrders()
+  // Merge so a single price level aggregates both backends.
+  const allOrders = useMemo(
+    () => [...(keeperOrders || []), ...(localOrders || [])],
+    [keeperOrders, localOrders],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -125,12 +143,12 @@ export default function OrderBook({ market }) {
   }, [market.id, market.ticker, market.yesBid, market.yesAsk])
 
   const myYesBids = useMemo(
-    () => userLevelsForSide(orders, market.id, 'yes'),
-    [orders, market.id],
+    () => userLevelsForSide(allOrders, { marketId: market.id, marketTicker: market.ticker }, 'yes'),
+    [allOrders, market.id, market.ticker],
   )
   const myYesAsks = useMemo(
-    () => userLevelsForSide(orders, market.id, 'no'),
-    [orders, market.id],
+    () => userLevelsForSide(allOrders, { marketId: market.id, marketTicker: market.ticker }, 'no'),
+    [allOrders, market.id, market.ticker],
   )
   const hasMyOrders = myYesBids.length > 0 || myYesAsks.length > 0
 
