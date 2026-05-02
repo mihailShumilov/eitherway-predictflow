@@ -224,7 +224,11 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     noncePubkey = result.noncePubkey
     nonceValue = result.nonceValue
   } catch (err) {
-    await fail(env, row, 'nonce_unavailable', String(err))
+    const msg = String(err)
+    const code: FailureCode = msg.includes('executor_underfunded')
+      ? 'executor_underfunded'
+      : 'nonce_unavailable'
+    await fail(env, row, code, msg)
     return
   }
 
@@ -399,12 +403,25 @@ async function readNonceValue(conn: Connection, pubkey: PublicKey): Promise<stri
   return bs58.encode(blockhash)
 }
 
+// Headroom over rent for the nonce-init tx fee + any priority fee. Two
+// signatures here (executor + nonce keypair) so 2 * 5000 base lamports plus
+// a margin for compute-unit pricing.
+const NONCE_INIT_FEE_BUFFER_LAMPORTS = 100_000
+
 async function createExecutorNonceAccount(
   conn: Connection,
   executor: Keypair,
   noncePubkey: Keypair,
 ): Promise<{ noncePubkey: PublicKey; nonceValue: string }> {
   const rentLamports = await conn.getMinimumBalanceForRentExemption(NONCE_ACCOUNT_LENGTH)
+  // Surface an empty/underfunded executor wallet as a clear, actionable code
+  // before we attempt the broadcast (which would otherwise fail with an
+  // opaque RPC error and bucket as generic 'nonce_unavailable').
+  const balance = await conn.getBalance(executor.publicKey, 'confirmed')
+  const need = rentLamports + NONCE_INIT_FEE_BUFFER_LAMPORTS
+  if (balance < need) {
+    throw new Error(`executor_underfunded: balance=${balance} need>=${need}`)
+  }
   const blockhashInfo = await conn.getLatestBlockhash('confirmed')
 
   const tx = new Transaction({

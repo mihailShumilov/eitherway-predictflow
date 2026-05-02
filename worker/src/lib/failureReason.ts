@@ -15,6 +15,7 @@ export type FailureCode =
   | 'dflow_no_transaction'
   | 'compute_input_invalid'
   | 'executor_key_unavailable'
+  | 'executor_underfunded'
   | 'nonce_unavailable'
   | 'tx_oversized'
   | 'tx_error'

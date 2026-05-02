@@ -15,6 +15,30 @@ const TYPE_CONFIG = {
   'take-profit': { label: 'Take-Profit', icon: TrendingUp, color: 'text-terminal-green', bg: 'bg-terminal-green/10', border: 'border-terminal-green/30' },
 }
 
+// Friendly labels for keeper FailureCode values. Unknown codes fall through
+// to the raw string so the operator can still recognize them.
+const FAILURE_REASON_LABELS = {
+  executor_underfunded: 'Keeper service temporarily unavailable — please retry shortly',
+  executor_key_unavailable: 'Keeper signing key unavailable',
+  nonce_unavailable: 'Could not allocate a transaction nonce',
+  dflow_rejected: 'DFlow rejected the trade (amount may be too small)',
+  dflow_unavailable: 'DFlow temporarily unavailable',
+  dflow_unreachable: 'Could not reach DFlow',
+  dflow_no_transaction: 'DFlow returned no swap quote',
+  compute_input_invalid: 'Trade input invalid (amount likely too small)',
+  tx_error: 'Solana transaction failed',
+  tx_oversized: 'Transaction too large',
+  rpc_error: 'Solana RPC error',
+  rpc_unreachable: 'Solana RPC unreachable',
+  confirmation_timeout: 'Transaction did not confirm in time',
+  decrypt_failed: 'Could not decrypt order payload',
+  ata_invalid: 'Invalid token account',
+  delegate_mismatch: 'Spending delegation mismatch',
+  delegation_insufficient: 'Spending approval insufficient — re-approve',
+  wallet_injected_before_nonce: 'Order state inconsistent',
+  unknown: 'Unknown error',
+}
+
 const STATUS_CONFIG = {
   pending: { label: 'Pending', icon: Clock, color: 'text-terminal-yellow' },
   armed: { label: 'Armed', icon: Loader2, color: 'text-terminal-accent', spin: true },
@@ -278,6 +302,15 @@ export default function ActiveOrders({ marketId, marketTicker }) {
                 )}
                 <span className="ml-auto">{formatDate(order.createdAt)}</span>
               </div>
+
+              {order.status === 'failed' && (order.failureReason || order.error) && (
+                <div className="mt-1 text-[10px] font-mono text-terminal-red/90 flex items-start gap-1">
+                  <AlertTriangle size={10} className="shrink-0 mt-0.5" />
+                  <span>
+                    {FAILURE_REASON_LABELS[order.failureReason] || order.failureReason || order.error}
+                  </span>
+                </div>
+              )}
             </div>
           )
         })}
