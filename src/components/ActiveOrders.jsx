@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react'
-import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud, Shield } from 'lucide-react'
+import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud, Shield, Info } from 'lucide-react'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useKeeperOrders } from '../hooks/useKeeperOrders'
 import { useKeeperApprovalOrder } from '../hooks/useKeeperApprovalOrder'
@@ -165,6 +165,15 @@ export default function ActiveOrders({ marketId, marketTicker }) {
         </div>
       )}
 
+      <div className="px-4 py-2 border-b border-terminal-border bg-terminal-bg/40 flex items-start gap-2 text-[10px] text-terminal-muted">
+        <Info size={11} className="text-terminal-accent shrink-0 mt-0.5" />
+        <span>
+          Conditional orders are held by PredictFlow's keeper, not posted to
+          DFlow's order book — DFlow has no native limit-order book. The keeper
+          watches prices and converts to a market trade when your trigger is hit.
+        </span>
+      </div>
+
       <div className="divide-y divide-terminal-border max-h-64 overflow-y-auto">
         {relevantOrders.map(order => {
           const typeConf = TYPE_CONFIG[order.orderType] || TYPE_CONFIG.limit
@@ -185,7 +194,7 @@ export default function ActiveOrders({ marketId, marketTicker }) {
                   {order.source === 'keeper' && (
                     <span
                       className="flex items-center gap-1 text-[10px] font-mono text-terminal-accent"
-                      title="Stored on the keeper — fires even when this tab is closed"
+                      title="Held by PredictFlow's keeper service — not posted to DFlow's order book. Fires as a market trade when your trigger is hit, even when this tab is closed."
                     >
                       <Cloud size={10} />
                       keeper
