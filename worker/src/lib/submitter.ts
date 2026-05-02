@@ -62,6 +62,13 @@ type OrderRowConfirmation = {
   trigger_price: number
   fill_signature: string
   updated_at: number
+  // Encrypted signed-tx bytes used to re-broadcast a not-yet-landed tx
+  // when validators didn't pick it up before Helius's maxRetries
+  // exhausted. Both columns are nullable: legacy-flow rows always have
+  // them (frontend signed); approval-flow rows only get them populated
+  // after the keeper's first successful broadcast.
+  signed_tx_enc: ArrayBuffer | null
+  signed_tx_iv: ArrayBuffer | null
 }
 
 export async function submitOrder(env: Env, orderId: string): Promise<void> {
@@ -178,7 +185,8 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
 export async function checkSubmittedOrder(env: Env, orderId: string): Promise<void> {
   const row = await env.DB
     .prepare(
-      `SELECT id, wallet, market_ticker, trigger_price, fill_signature, updated_at
+      `SELECT id, wallet, market_ticker, trigger_price, fill_signature, updated_at,
+              signed_tx_enc, signed_tx_iv
          FROM orders
         WHERE id = ? AND status = 'submitting' AND fill_signature IS NOT NULL`,
     )
@@ -253,6 +261,36 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
     await markFailed(env, row, 'confirmation_timeout', `confirmation_timeout_after_${Math.floor(ageMs / 1000)}s`)
     await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: 'confirmation_timeout' })
     return
+  }
+  // Tx not confirmed and not yet timed out. Helius's maxRetries: 5 only
+  // covers ~150s of automatic rebroadcast; after that, validators no
+  // longer see the tx in their mempools and it's effectively dropped.
+  // To bridge that gap until CONFIRMATION_GIVE_UP_MS (~240s), re-broadcast
+  // the same signed tx ourselves on every alarm cycle. Solana dedups
+  // by signature, durable nonces guarantee no double-execution, so this
+  // is safe to re-do indefinitely until the tx lands or we time out.
+  if (row.signed_tx_enc && row.signed_tx_iv) {
+    try {
+      const signedBytes = await decrypt(
+        { iv: new Uint8Array(row.signed_tx_iv), ciphertext: new Uint8Array(row.signed_tx_enc) },
+        env.SIGNED_TX_KEY,
+      )
+      const rebroadcast = await sendRawTransaction(env, signedBytes)
+      console.log('check_submitted_order_rebroadcast', {
+        id: orderId,
+        signature: row.fill_signature,
+        ok: rebroadcast.ok,
+        error: rebroadcast.ok ? null : rebroadcast.error,
+        ageMs,
+      })
+    } catch (err) {
+      // Non-fatal: a transient decrypt or RPC failure here is fine because
+      // the next alarm cycle will retry. The original tx may still land
+      // from one of Helius's automatic retries.
+      console.error('check_submitted_order_rebroadcast_failed', {
+        id: orderId, error: String(err),
+      })
+    }
   }
   // Otherwise leave alone; next alarm re-checks.
 }
