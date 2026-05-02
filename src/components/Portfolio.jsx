@@ -240,9 +240,12 @@ function SettlementBadge({ won }) {
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border bg-terminal-muted/10 border-terminal-muted/30 text-terminal-muted">
+    <span
+      className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded border bg-terminal-muted/10 border-terminal-muted/30 text-terminal-muted"
+      title="Settled, but outcome could not be determined — DFlow has no final result for this market yet, or we couldn't match the position to a settled market"
+    >
       <MinusCircle size={10} />
-      Settled
+      Outcome ?
     </span>
   )
 }
@@ -281,10 +284,15 @@ function PositionsTable({ positions, onOpenMarket }) {
           <tbody className="divide-y divide-terminal-border/50">
             {positions.map((p, i) => {
               const c = settlementColor(daysUntil(p.closeTime))
-              const pnlKnown = p.pnl !== null && p.pnl !== undefined
+              const settled = !!p.settled
+              // For settled positions where DFlow hasn't (yet) given us a
+              // result, every $-denominated field is unknown — not zero.
+              // Showing $0.00 in P&L would imply break-even, which is a
+              // factual claim we can't actually make.
+              const outcomeUnresolved = settled && p.won == null
+              const pnlKnown = !outcomeUnresolved && p.pnl !== null && p.pnl !== undefined
               const isProfit = pnlKnown && p.pnl > 0
               const isLoss = pnlKnown && p.pnl < 0
-              const settled = !!p.settled
               const canOpen = !!(onOpenMarket && p.ticker)
               const handleOpen = canOpen ? () => onOpenMarket(p) : undefined
               const handleKey = canOpen
@@ -336,7 +344,13 @@ function PositionsTable({ positions, onOpenMarket }) {
                     {pnlKnown
                       ? `${isProfit ? '+' : ''}$${p.pnl.toFixed(2)}`
                       : (
-                        <span title="Entry price unknown — no localStorage record and no on-chain trade history found for this position">—</span>
+                        <span
+                          title={
+                            outcomeUnresolved
+                              ? "Outcome unknown — DFlow hasn't published a final result for this market yet, or we couldn't match the position to a settled market"
+                              : 'Entry price unknown — no localStorage record and no on-chain trade history found for this position'
+                          }
+                        >—</span>
                       )}
                   </td>
                   <td className="px-4 py-3 text-right">

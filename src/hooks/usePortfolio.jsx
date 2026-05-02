@@ -202,7 +202,11 @@ async function enrichLocalSettled(positions, dflowBase) {
   // Resolve targets sequentially — the series cache gets reused across
   // iterations, so doing this in parallel would just multiply requests
   // for the same series before the cache lands.
-  const resolved = new Map() // position object → 'yes' | 'no'
+  // Map value carries both the win/loss outcome AND the discovered ticker
+  // metadata, so the UI can route to the market detail and persist
+  // ticker context on the in-memory position even when localStorage
+  // didn't have it.
+  const resolved = new Map()
   // Collect ticker/series/subtitle metadata for positions we resolved by
   // search — we'll write these back to localStorage so subsequent loads
   // hit the ticker fast-path instead of re-searching.
@@ -218,7 +222,9 @@ async function enrichLocalSettled(positions, dflowBase) {
         const exact = markets.find(m => m.ticker === p.ticker)
         if (exact) {
           const result = (exact.result || '').toString().toLowerCase()
-          if (result === 'yes' || result === 'no') resolved.set(p, result)
+          if (result === 'yes' || result === 'no') {
+            resolved.set(p, { wonSide: result, ticker: p.ticker, eventTicker: p.eventTicker, seriesTicker: p.seriesTicker })
+          }
           continue
         }
       }
@@ -279,7 +285,12 @@ async function enrichLocalSettled(positions, dflowBase) {
       if (pick) {
         const result = (pick.result || '').toString().toLowerCase()
         if (result === 'yes' || result === 'no') {
-          resolved.set(p, result)
+          resolved.set(p, {
+            wonSide: result,
+            ticker: pick.ticker || null,
+            eventTicker: pick._eventTicker || null,
+            seriesTicker: seriesTickers[0] || null,
+          })
           // Backfill ticker fields onto the matching localStorage entry
           // so the next portfolio load uses the ticker fast-path.
           if (!p.ticker) {
@@ -317,9 +328,9 @@ async function enrichLocalSettled(positions, dflowBase) {
   if (resolved.size === 0) return positions
 
   return positions.map(p => {
-    const wonSide = resolved.get(p)
-    if (!wonSide) return p
-    const won = wonSide === p.side
+    const r = resolved.get(p)
+    if (!r) return p
+    const won = r.wonSide === p.side
     const perShare = won ? 1 : 0
     return {
       ...p,
@@ -327,6 +338,12 @@ async function enrichLocalSettled(positions, dflowBase) {
       currentPrice: perShare,
       value: perShare * p.shares,
       pnl: (perShare - (p.entryPrice || 0)) * p.shares,
+      // Carry the discovered ticker into the in-memory position so the
+      // UI can route to the market detail. localStorage backfill happens
+      // separately for the next page load.
+      ticker: p.ticker || r.ticker || null,
+      eventTicker: p.eventTicker || r.eventTicker || null,
+      seriesTicker: p.seriesTicker || r.seriesTicker || null,
     }
   })
 }
