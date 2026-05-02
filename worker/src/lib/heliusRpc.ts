@@ -7,6 +7,25 @@ export type SendResult =
 
 export type StatusResult = { confirmed: boolean; error?: string }
 
+// Result of simulateTransaction. The discriminator distinguishes between
+// transport failures (RPC unreachable / 5xx / malformed JSON) and a
+// simulation that ran but reported tx-level errors. Both cases map to
+// distinct FailureCode buckets in the caller.
+export type SimulateResult =
+  | {
+      ok: true
+      // Per-account post-simulation state, parallel to the addresses
+      // passed in. base64-encoded; null for accounts that don't exist
+      // at simulation time.
+      accounts: Array<{ data: string; lamports: number; owner: string } | null>
+      // null when the simulated tx executed successfully on-chain logic.
+      // Non-null when the tx itself errored (e.g. instruction failed).
+      err: unknown | null
+      logs: string[]
+      unitsConsumed: number | null
+    }
+  | { ok: false; permanent: boolean; error: string }
+
 // -32602: invalid params (malformed tx)
 // -32003: BlockhashNotFound — for durable nonce, stale nonce
 // -32004: BlockNotAvailable
@@ -77,6 +96,67 @@ export async function getSignatureStatus(env: Env, signature: string): Promise<S
     return { confirmed: false }
   } catch {
     return { confirmed: false }
+  }
+}
+
+// Run simulateTransaction on a signed tx with a list of addresses to
+// retrieve post-simulation account state for. Used as a pre-broadcast
+// safety gate: lets the keeper inspect what the tx will actually do
+// (token balance changes, errors) without committing it on-chain.
+//
+// `replaceRecentBlockhash: true` lets simulation run even when the tx's
+// nonce-based recentBlockhash is older than the cluster's current state —
+// safe here because we only care about the tx body's instructions, not
+// blockhash freshness.
+export async function simulateTransaction(
+  env: Env,
+  bytes: Uint8Array,
+  addresses: string[],
+): Promise<SimulateResult> {
+  const b64 = bytesToBase64(bytes)
+  let res: Response
+  try {
+    res = await fetch(env.HELIUS_RPC_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'simulateTransaction',
+        params: [b64, {
+          encoding: 'base64',
+          sigVerify: false,
+          replaceRecentBlockhash: true,
+          commitment: 'confirmed',
+          accounts: { encoding: 'base64', addresses },
+        }],
+      }),
+    })
+  } catch (err) {
+    return { ok: false, permanent: false, error: `rpc_unreachable: ${String(err)}` }
+  }
+  if (!res.ok) {
+    return { ok: false, permanent: res.status >= 400 && res.status < 500, error: `rpc_${res.status}` }
+  }
+  let body: any
+  try { body = await res.json() } catch { return { ok: false, permanent: false, error: 'rpc_bad_json' } }
+  if (body.error) {
+    const code = body.error.code
+    const message = body.error.message ?? 'rpc_error'
+    return {
+      ok: false,
+      permanent: PERMANENT_RPC_CODES.has(code),
+      error: `${code}:${message}`.slice(0, 500),
+    }
+  }
+  const value = body?.result?.value
+  if (!value) return { ok: false, permanent: false, error: 'sim_no_value' }
+  return {
+    ok: true,
+    accounts: Array.isArray(value.accounts) ? value.accounts : [],
+    err: value.err ?? null,
+    logs: Array.isArray(value.logs) ? value.logs : [],
+    unitsConsumed: typeof value.unitsConsumed === 'number' ? value.unitsConsumed : null,
   }
 }
 

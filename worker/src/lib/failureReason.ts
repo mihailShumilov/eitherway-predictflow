@@ -16,6 +16,8 @@ export type FailureCode =
   | 'compute_input_invalid'
   | 'executor_key_unavailable'
   | 'executor_underfunded'
+  | 'not_a_swap'
+  | 'simulation_failed'
   | 'nonce_unavailable'
   | 'tx_oversized'
   | 'tx_error'

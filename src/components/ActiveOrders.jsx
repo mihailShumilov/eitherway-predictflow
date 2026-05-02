@@ -20,6 +20,8 @@ const TYPE_CONFIG = {
 const FAILURE_REASON_LABELS = {
   executor_underfunded: 'Keeper service temporarily unavailable — please retry shortly',
   executor_key_unavailable: 'Keeper signing key unavailable',
+  not_a_swap: 'This market type is not yet supported for conditional orders',
+  simulation_failed: 'Pre-flight check failed — please retry',
   nonce_unavailable: 'Could not allocate a transaction nonce',
   dflow_rejected: 'DFlow rejected the trade (amount may be too small)',
   dflow_unavailable: 'DFlow temporarily unavailable',

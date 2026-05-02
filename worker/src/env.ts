@@ -16,6 +16,21 @@ export type Env = {
   ALLOWED_ORIGIN: string
   SESSION_TTL_SECONDS: string
 
+  // PredictFlow service commission. Both optional — if either is unset
+  // (or COMMISSION_BPS=0), commission is skipped and the entire
+  // post-DFlow residual is returned to the user instead.
+  //
+  //   COMMISSION_BPS               — basis points of amount_usdc taken as
+  //                                   service fee on every successful fire.
+  //                                   100 = 1.00%. Capped by available
+  //                                   residual on the executor at fire time.
+  //   COMMISSION_RECIPIENT_USDC_ATA — pre-derived USDC ATA owned by the
+  //                                   PredictFlow treasury wallet. Pass the
+  //                                   ATA (not the wallet) so the runtime
+  //                                   doesn't need an extra RPC to derive it.
+  COMMISSION_BPS?: string
+  COMMISSION_RECIPIENT_USDC_ATA?: string
+
   // Secrets — set via `wrangler secret put NAME`
   SIGNED_TX_KEY: string         // base64-encoded 32-byte AES-256 key
   SESSION_SIGNING_KEY: string   // 32-byte HMAC key for session tokens
