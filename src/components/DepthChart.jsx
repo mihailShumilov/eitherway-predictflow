@@ -2,8 +2,12 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { generateDepthData } from '../data/mockDetailData'
 import { normalizeLevel } from '../lib/normalize'
 import { getChartPalette } from '../lib/palette'
+import { useKeeperOrders } from '../hooks/useKeeperOrders'
+import { useConditionalOrders } from '../hooks/useConditionalOrders'
 
 const DFLOW_BASE = '/api/dflow'
+
+const ACTIVE_ORDER_STATUSES = new Set(['pending', 'armed', 'submitting'])
 
 function withCumulative(levels, { reverse = false } = {}) {
   const sorted = [...levels].sort((a, b) => reverse ? b.price - a.price : a.price - b.price)
@@ -55,21 +59,53 @@ export default function DepthChart({ market }) {
     return () => observer.disconnect()
   }, [])
 
+  const { orders: keeperOrders } = useKeeperOrders()
+  const { orders: localOrders } = useConditionalOrders()
+
+  // Active orders for this market, projected onto the YES price axis so
+  // they line up with the depth chart. NO-side orders are mirrored
+  // (`1 - triggerPrice`) — buying NO at $X is the same price level as
+  // selling YES at $1 - $X on the YES axis.
+  const userOrders = useMemo(() => {
+    const all = [...(keeperOrders || []), ...(localOrders || [])]
+    return all
+      .filter(o => ACTIVE_ORDER_STATUSES.has(o.status))
+      .filter(o =>
+        (market.ticker && o.marketTicker === market.ticker) ||
+        (market.id && o.marketId === market.id),
+      )
+      .map(o => {
+        const trigger = Number(o.triggerPrice)
+        if (!Number.isFinite(trigger)) return null
+        return {
+          id: o.id,
+          orderType: o.orderType || 'limit',
+          side: o.side,
+          triggerPrice: trigger,
+          yesAxisPrice: o.side === 'no' ? 1 - trigger : trigger,
+        }
+      })
+      .filter(Boolean)
+  }, [keeperOrders, localOrders, market.ticker, market.id])
+
   const { bids, asks, midPrice, maxSize, minPrice, maxPrice } = useMemo(() => {
     const resolved = book || generateDepthData(market.yesBid, market.yesAsk, 20)
     const mid = (market.yesBid + market.yesAsk) / 2
     const allSizes = [...resolved.bids, ...resolved.asks].map(l => l.cumulative)
     const maxSize = Math.max(1, ...allSizes)
     const prices = [...resolved.bids, ...resolved.asks].map(l => l.price)
+    // Pad a touch around user-order triggers so a marker just outside the
+    // book's current range still lands on-chart.
+    const orderPrices = userOrders.map(o => o.yesAxisPrice)
     return {
       bids: resolved.bids,
       asks: resolved.asks,
       midPrice: mid,
       maxSize,
-      minPrice: Math.min(mid, ...prices),
-      maxPrice: Math.max(mid, ...prices),
+      minPrice: Math.min(mid, ...prices, ...orderPrices),
+      maxPrice: Math.max(mid, ...prices, ...orderPrices),
     }
-  }, [book, market.yesBid, market.yesAsk])
+  }, [book, market.yesBid, market.yesAsk, userOrders])
 
   const padding = { top: 5, right: 40, bottom: 22, left: 10 }
 
@@ -170,6 +206,46 @@ export default function DepthChart({ market }) {
     ctx.stroke()
     ctx.setLineDash([])
 
+    // User keeper-held conditional orders. Drawn after the depth fills
+    // so the line and label sit on top of the colored area.
+    if (userOrders.length > 0) {
+      ctx.font = 'bold 9px JetBrains Mono, monospace'
+      ctx.textAlign = 'center'
+      for (const o of userOrders) {
+        const x = toX(o.yesAxisPrice)
+        if (x < padding.left - 1 || x > width - padding.right + 1) continue
+        const color = o.orderType === 'stop-loss'
+          ? palette.red
+          : o.orderType === 'take-profit'
+            ? palette.green
+            : palette.yellow
+        ctx.strokeStyle = color
+        ctx.setLineDash([4, 3])
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(x, padding.top)
+        ctx.lineTo(x, padding.top + chartH)
+        ctx.stroke()
+        ctx.setLineDash([])
+
+        const typeLetter = o.orderType === 'stop-loss'
+          ? 'SL' : o.orderType === 'take-profit' ? 'TP' : 'L'
+        const label = `${typeLetter} ${o.side?.toUpperCase() || ''} ${(o.triggerPrice * 100).toFixed(1)}¢`
+        const tw = ctx.measureText(label).width
+        const px = 4
+        const py = 2
+        const bx = Math.max(padding.left, Math.min(width - padding.right - tw - px * 2, x - tw / 2 - px))
+        const by = padding.top + 2
+        ctx.fillStyle = hexAlpha(palette.surface, 0.85)
+        ctx.fillRect(bx, by, tw + px * 2, 12 + py)
+        ctx.strokeStyle = color
+        ctx.lineWidth = 1
+        ctx.strokeRect(bx + 0.5, by + 0.5, tw + px * 2 - 1, 12 + py - 1)
+        ctx.fillStyle = color
+        ctx.fillText(label, bx + tw / 2 + px, by + 10)
+      }
+    }
+
     // Hover
     if (hoverX !== null) {
       const priceAt = minPrice + ((hoverX - padding.left) / chartW) * span
@@ -182,7 +258,7 @@ export default function DepthChart({ market }) {
       ctx.stroke()
       ctx.setLineDash([])
     }
-  }, [bids, asks, midPrice, maxSize, minPrice, maxPrice, dimensions, hoverX])
+  }, [bids, asks, midPrice, maxSize, minPrice, maxPrice, dimensions, hoverX, userOrders])
 
   useEffect(() => { draw() }, [draw])
 
@@ -225,6 +301,15 @@ export default function DepthChart({ market }) {
             <span className="w-2 h-2 rounded-full bg-terminal-red" />
             Asks
           </span>
+          {userOrders.length > 0 && (
+            <span
+              className="flex items-center gap-1 text-terminal-yellow"
+              title="Your active conditional orders are shown as dashed lines on the chart at their trigger price"
+            >
+              <span className="w-2 h-2 rounded-full bg-terminal-yellow" />
+              Your orders
+            </span>
+          )}
         </div>
       </div>
       <div ref={containerRef} className="h-48 relative">
