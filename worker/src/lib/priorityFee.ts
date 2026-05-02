@@ -12,8 +12,10 @@
 
 import { ComputeBudgetProgram, TransactionInstruction } from '@solana/web3.js'
 
-// Compute-budget instruction discriminator for SetComputeUnitPrice.
-// Layout: [3, ...u64 LE microLamports]
+// Compute-budget instruction discriminators.
+//   SetComputeUnitLimit: [2, ...u32 LE units]   (5 bytes total)
+//   SetComputeUnitPrice: [3, ...u64 LE microLamports]   (9 bytes total)
+const SET_COMPUTE_UNIT_LIMIT = 2
 const SET_COMPUTE_UNIT_PRICE = 3
 
 // Returns the SetComputeUnitPrice value in microlamports, or null if the
@@ -50,6 +52,62 @@ function buildSetComputeUnitPrice(microLamports: number): TransactionInstruction
     keys: [],
     data: Buffer.from(data),
   })
+}
+
+// Returns the SetComputeUnitLimit value (in CUs) of an instruction, or
+// null if it's not a SetComputeUnitLimit ix.
+export function parseSetComputeUnitLimit(ix: TransactionInstruction): number | null {
+  if (!ix.programId.equals(ComputeBudgetProgram.programId)) return null
+  if (ix.data.length < 5) return null
+  if (ix.data[0] !== SET_COMPUTE_UNIT_LIMIT) return null
+  const view = new DataView(ix.data.buffer, ix.data.byteOffset, ix.data.byteLength)
+  return view.getUint32(1, true)
+}
+
+// Returns the first SetComputeUnitLimit found in a list of CB instructions,
+// or null. A tx should contain at most one.
+export function extractComputeUnitLimit(cbIxs: TransactionInstruction[]): number | null {
+  for (const ix of cbIxs) {
+    const v = parseSetComputeUnitLimit(ix)
+    if (v !== null) return v
+  }
+  return null
+}
+
+// Build a SetComputeUnitLimit instruction with explicit byte layout
+// (same Buffer/Uint8Array workaround as buildSetComputeUnitPrice).
+function buildSetComputeUnitLimit(units: number): TransactionInstruction {
+  const data = new Uint8Array(5)
+  data[0] = SET_COMPUTE_UNIT_LIMIT
+  new DataView(data.buffer).setUint32(1, units, true)
+  return new TransactionInstruction({
+    programId: ComputeBudgetProgram.programId,
+    keys: [],
+    data: Buffer.from(data),
+  })
+}
+
+// Walk a list of compute-budget instructions and enforce a floor on
+// SetComputeUnitLimit. Replaces one whose value is below the floor;
+// appends one if no SetComputeUnitLimit is present. Used when adding
+// post-DFlow sweep instructions that DFlow's original CU budget didn't
+// account for.
+export function applyComputeUnitLimitFloor(
+  cbIxs: TransactionInstruction[],
+  floorUnits: number,
+): TransactionInstruction[] {
+  let foundLimit = false
+  const out = cbIxs.map((ix) => {
+    const existing = parseSetComputeUnitLimit(ix)
+    if (existing === null) return ix
+    foundLimit = true
+    if (existing >= floorUnits) return ix
+    return buildSetComputeUnitLimit(floorUnits)
+  })
+  if (!foundLimit) {
+    out.unshift(buildSetComputeUnitLimit(floorUnits))
+  }
+  return out
 }
 
 // Walk a list of compute-budget instructions and enforce a floor on

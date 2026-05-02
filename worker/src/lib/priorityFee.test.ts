@@ -4,7 +4,9 @@ import {
 } from '@solana/web3.js'
 
 import {
-  applyComputeUnitPriceFloor, extractComputeUnitPrice, parseSetComputeUnitPrice,
+  applyComputeUnitLimitFloor, applyComputeUnitPriceFloor,
+  extractComputeUnitLimit, extractComputeUnitPrice,
+  parseSetComputeUnitLimit, parseSetComputeUnitPrice,
 } from './priorityFee'
 
 const FLOOR = 250_000
@@ -74,6 +76,69 @@ describe('parseSetComputeUnitPrice', () => {
   it('handles large u64 values without precision loss', () => {
     const big = 4_294_967_296 // > u32 max, well within u64
     expect(parseSetComputeUnitPrice(setCUPrice(big))).toBe(BigInt(big))
+  })
+})
+
+describe('parseSetComputeUnitLimit', () => {
+  it('reads the limit when given a SetComputeUnitLimit ix', () => {
+    expect(parseSetComputeUnitLimit(setCULimit(200_000))).toBe(200_000)
+  })
+
+  it('returns null for SetComputeUnitPrice', () => {
+    expect(parseSetComputeUnitLimit(setCUPrice(100))).toBeNull()
+  })
+
+  it('returns null for non-CB programs', () => {
+    expect(parseSetComputeUnitLimit(memoIx())).toBeNull()
+  })
+})
+
+describe('extractComputeUnitLimit', () => {
+  it('returns null when no SetComputeUnitLimit is present', () => {
+    expect(extractComputeUnitLimit([setCUPrice(100), memoIx()])).toBeNull()
+  })
+
+  it('returns null for an empty list', () => {
+    expect(extractComputeUnitLimit([])).toBeNull()
+  })
+
+  it('returns the limit when one is present', () => {
+    expect(extractComputeUnitLimit([setCUPrice(100), setCULimit(45_000)])).toBe(45_000)
+  })
+})
+
+describe('applyComputeUnitLimitFloor', () => {
+  it('replaces a SetComputeUnitLimit that is below the floor', () => {
+    const cbIxs = [setCULimit(20_000), setCUPrice(100_000)]
+    const out = applyComputeUnitLimitFloor(cbIxs, 50_000)
+    expect(out).toHaveLength(2)
+    expect(parseSetComputeUnitLimit(out[0])).toBe(50_000)
+    expect(parseSetComputeUnitPrice(out[1])).toBe(100_000n)
+  })
+
+  it('preserves a SetComputeUnitLimit at the floor exactly', () => {
+    const cbIxs = [setCULimit(50_000)]
+    const out = applyComputeUnitLimitFloor(cbIxs, 50_000)
+    expect(parseSetComputeUnitLimit(out[0])).toBe(50_000)
+    expect(out[0]).toBe(cbIxs[0])
+  })
+
+  it('preserves a SetComputeUnitLimit that is above the floor', () => {
+    const cbIxs = [setCULimit(80_000)]
+    const out = applyComputeUnitLimitFloor(cbIxs, 50_000)
+    expect(parseSetComputeUnitLimit(out[0])).toBe(80_000)
+    expect(out[0]).toBe(cbIxs[0])
+  })
+
+  it('prepends a SetComputeUnitLimit when none is present', () => {
+    const cbIxs = [setCUPrice(100_000)]
+    const out = applyComputeUnitLimitFloor(cbIxs, 50_000)
+    expect(out).toHaveLength(2)
+    // CU limit prepended at index 0 (Solana validators apply CU limits
+    // before the rest of the tx so position-first matters less than
+    // presence; we still prepend for visual clarity in tx introspection).
+    expect(parseSetComputeUnitLimit(out[0])).toBe(50_000)
+    expect(out[1]).toBe(cbIxs[0]) // existing price preserved
   })
 })
 
