@@ -36,8 +36,10 @@ import type { Env } from '../env'
 import { decrypt } from './encryption'
 import { audit } from './audit'
 import { incr } from './metrics'
-import { bytesToBase64 } from './crypto'
 import { CONFIRMATION_GIVE_UP_MS } from './constants'
+import { sendRawTransaction, getSignatureStatusWithRetry } from './heliusRpc'
+import { markOrderFailed } from './orderState'
+import { classifyRpcError, type FailureCode } from './failureReason'
 
 type OrderRowFull = {
   id: string
@@ -99,7 +101,7 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
     }
     signedBytes = await decrypt(enc, env.SIGNED_TX_KEY)
   } catch (err) {
-    await markFailed(env, row, `decrypt_failed: ${String(err)}`)
+    await markFailed(env, row, 'decrypt_failed', `decrypt_failed: ${String(err)}`)
     return
   }
 
@@ -109,23 +111,36 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
     marketTicker: row.market_ticker,
     txBytes: signedBytes.length,
   })
-  // One-time diagnostic dump of the signed tx as base64 so we can decode it
-  // locally and verify the wallet didn't reorder the durable-nonce
-  // advanceNonceAccount instruction off position 0. Stored in the audit log
-  // (wrangler tail truncates ~1KB log lines, dropping the bytes inline).
-  // Remove once verified.
-  await audit(env, {
-    wallet: row.wallet,
-    orderId: row.id,
-    event: 'submit.tx_dump',
-    detail: { txBase64: bytesToBase64(signedBytes), txBytes: signedBytes.length },
-  })
+
+  // Pre-flight check: ensure advanceNonceAccount is at instruction position 0.
+  // If a wallet (e.g. Phantom) injected Lighthouse / Smart-Transaction
+  // safety instructions ahead of it, the durable-nonce protocol breaks and
+  // the runtime rejects the tx pre-inclusion (Helius reports null forever,
+  // solscan shows "not found"). Detect here and fail the order with a
+  // human-readable reason instead of waiting out the 4-minute confirmation
+  // timeout.
+  const nonceCheck = inspectFirstInstructionIsNonceAdvance(signedBytes)
+  if (!nonceCheck.ok) {
+    console.error('submit_order_nonce_position_invalid', { id: orderId, ...nonceCheck })
+    await markFailed(
+      env,
+      row,
+      'wallet_injected_before_nonce',
+      `wallet_injected_instructions_before_nonce_advance: ${nonceCheck.reason}`,
+    )
+    await incr(env, 'submit_failed_permanent', {
+      marketTicker: row.market_ticker,
+      error: 'wallet_injected_before_nonce',
+    })
+    return
+  }
   const sigResult = await sendRawTransaction(env, signedBytes)
   if (!sigResult.ok) {
     console.error('submit_order_send_failed', { id: orderId, permanent: sigResult.permanent, error: sigResult.error })
     if (sigResult.permanent) {
-      await markFailed(env, row, sigResult.error)
-      await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: sigResult.error })
+      const code = classifyRpcError(sigResult.error)
+      await markFailed(env, row, code, sigResult.error)
+      await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: code })
     } else {
       await env.DB
         .prepare(`UPDATE orders SET status = 'armed', updated_at = ? WHERE id = ? AND status = 'submitting'`)
@@ -171,7 +186,7 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
     .first<OrderRowConfirmation>()
   if (!row) return  // moved to filled/failed/cancelled by another path
 
-  const status = await getSignatureStatus(env, row.fill_signature)
+  const status = await getSignatureStatusWithRetry(env, row.fill_signature, 1)
   const ageMs = Date.now() - row.updated_at
   console.log('check_submitted_order', {
     id: orderId,
@@ -181,8 +196,8 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
     ageMs,
   })
   if (status.error) {
-    await markFailed(env, row, status.error)
-    await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: status.error })
+    await markFailed(env, row, 'tx_error', status.error)
+    await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: 'tx_error' })
     return
   }
   if (status.confirmed) {
@@ -205,118 +220,152 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
     await incr(env, 'submit_succeeded', { marketTicker: row.market_ticker })
     return
   }
-  // Confirmation neither succeeded nor errored. If the broadcast was a
-  // long time ago, the tx almost certainly never landed (most often a
-  // durable-nonce mismatch — the runtime rejects pre-inclusion, so
-  // getSignatureStatuses returns null indefinitely). Give up so the row
-  // doesn't poll forever.
+  // Confirmation neither succeeded nor errored. Before giving up, retry
+  // status fetching a few times — a single transient RPC failure shouldn't
+  // mark a tx that actually landed as failed. If still unconfirmed after
+  // the timeout, treat it as dropped (most often durable-nonce mismatch:
+  // runtime rejects pre-inclusion so getSignatureStatuses returns null
+  // indefinitely).
   if (ageMs > CONFIRMATION_GIVE_UP_MS) {
+    const final = await getSignatureStatusWithRetry(env, row.fill_signature, 3)
+    if (final.confirmed) {
+      const now = Date.now()
+      await env.DB
+        .prepare(
+          `UPDATE orders SET status = 'filled', fill_price = ?, filled_at = ?, updated_at = ?
+            WHERE id = ? AND status = 'submitting'`,
+        )
+        .bind(row.trigger_price, now, now, row.id)
+        .run()
+      await audit(env, {
+        wallet: row.wallet, orderId: row.id, event: 'order.filled',
+        detail: { signature: row.fill_signature, marketTicker: row.market_ticker, lateConfirm: true },
+      })
+      await incr(env, 'order_filled', { marketTicker: row.market_ticker })
+      return
+    }
+    if (final.error) {
+      await markFailed(env, row, 'tx_error', final.error)
+      await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: 'tx_error' })
+      return
+    }
     console.error('check_submitted_order_timeout', { id: orderId, signature: row.fill_signature, ageMs })
-    await markFailed(env, row, `confirmation_timeout_after_${Math.floor(ageMs / 1000)}s`)
+    await markFailed(env, row, 'confirmation_timeout', `confirmation_timeout_after_${Math.floor(ageMs / 1000)}s`)
     await incr(env, 'submit_failed_permanent', { marketTicker: row.market_ticker, error: 'confirmation_timeout' })
     return
   }
   // Otherwise leave alone; next alarm re-checks.
 }
 
-async function markFailed(env: Env, row: { id: string; wallet: string }, reason: string): Promise<void> {
-  const now = Date.now()
-  await env.DB
-    .prepare(`UPDATE orders SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?`)
-    .bind(reason.slice(0, 500), now, row.id)
-    .run()
-  await audit(env, {
-    wallet: row.wallet,
-    orderId: row.id,
-    event: 'order.failed',
-    detail: { reason },
-  })
-}
-
-type SendResult =
-  | { ok: true; signature: string }
-  | { ok: false; permanent: boolean; error: string }
-
-async function sendRawTransaction(env: Env, bytes: Uint8Array): Promise<SendResult> {
-  // base64-encode for the JSON-RPC body. Use the chunked helper, NOT
-  // `btoa(String.fromCharCode(...bytes))` — spreading a Uint8Array as
-  // function args hits the JS call-stack arg limit on V8.
-  const b64 = bytesToBase64(bytes)
-  let res: Response
+// Decode just enough of a serialized v0/legacy tx to verify that the FIRST
+// instruction is the System program's advanceNonceAccount. We do NOT pull
+// in @solana/web3.js inside the worker; the format is stable and small
+// enough to walk by hand. Returns ok=true if the structure matches; ok=false
+// with a human-readable reason otherwise.
+//
+// Wire format (compact-u16 = 1–3 bytes varint):
+//   sigCount (cu16) | sigCount * 64 sig bytes |
+//   [version_marker?] | header(3) |
+//   numStaticAccountKeys (cu16) | N * 32 pubkey bytes |
+//   recentBlockhash (32) |
+//   numInstructions (cu16) |
+//   each instruction: programIdIdx(1) | numAccounts(cu16) | account_idx_bytes |
+//                     dataLen(cu16) | data_bytes
+//   [v0 only: numAddressTableLookups(cu16) | ...]
+//
+// For our purposes we only need to reach instruction #0 and check that:
+//   (a) its programId resolves to System Program (all-zeros pubkey)
+//   (b) its data bytes start with the advanceNonceAccount discriminator (04 00 00 00)
+function inspectFirstInstructionIsNonceAdvance(
+  bytes: Uint8Array,
+): { ok: true } | { ok: false; reason: string; firstProgramId?: string; firstDataHex?: string } {
   try {
-    res = await fetch(env.HELIUS_RPC_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'sendTransaction',
-        // maxRetries: 5 — Helius will rebroadcast up to 5 times if the
-        // leader doesn't include the tx within ~30s of each send. Without
-        // retries, low-priority txs that get dropped under congestion stay
-        // dropped forever and surface as "not found" on solscan even though
-        // the signature is valid. We pair this with the priority fee
-        // embedded by DFlow's /order so each rebroadcast is increasingly
-        // likely to land. Durable nonces guarantee no double-spend across
-        // retries — at most one inclusion can advance the nonce.
-        params: [b64, { encoding: 'base64', skipPreflight: true, maxRetries: 5 }],
-      }),
-    })
+    let off = 0
+    // Compact-u16 varint reader.
+    const readCu16 = (): number => {
+      let result = 0
+      let shift = 0
+      for (let i = 0; i < 3; i++) {
+        const b = bytes[off++]
+        result |= (b & 0x7f) << shift
+        if ((b & 0x80) === 0) return result
+        shift += 7
+      }
+      return result
+    }
+
+    const sigCount = readCu16()
+    off += sigCount * 64
+
+    // V0 marker: high bit set on first byte after sigs.
+    const versionByte = bytes[off]
+    const isV0 = (versionByte & 0x80) !== 0
+    if (isV0) off += 1
+
+    // Header (3 bytes).
+    off += 3
+
+    const numStatic = readCu16()
+    const staticOff = off
+    off += numStatic * 32
+
+    // recentBlockhash
+    off += 32
+
+    const numIxs = readCu16()
+    if (numIxs < 1) return { ok: false, reason: 'tx has zero instructions' }
+
+    // First instruction.
+    const firstProgramIdx = bytes[off++]
+    const firstAccountsLen = readCu16()
+    off += firstAccountsLen
+    const firstDataLen = readCu16()
+    const firstData = bytes.slice(off, off + firstDataLen)
+
+    // Resolve first program id from staticAccountKeys.
+    if (firstProgramIdx >= numStatic) {
+      return { ok: false, reason: 'first instruction programIdIdx out of range' }
+    }
+    const firstProgramKey = bytes.slice(staticOff + firstProgramIdx * 32, staticOff + firstProgramIdx * 32 + 32)
+
+    const isAllZero = firstProgramKey.every((b) => b === 0)
+    if (!isAllZero) {
+      return {
+        ok: false,
+        reason: 'first instruction is not System program',
+        firstProgramId: bytesToHex(firstProgramKey),
+        firstDataHex: bytesToHex(firstData),
+      }
+    }
+
+    // System program advanceNonceAccount discriminator = 0x04 00 00 00.
+    const isAdvanceNonce =
+      firstData.length >= 4 &&
+      firstData[0] === 0x04 && firstData[1] === 0x00 && firstData[2] === 0x00 && firstData[3] === 0x00
+    if (!isAdvanceNonce) {
+      return {
+        ok: false,
+        reason: 'first instruction is not System advanceNonceAccount',
+        firstDataHex: bytesToHex(firstData),
+      }
+    }
+    return { ok: true }
   } catch (err) {
-    return { ok: false, permanent: false, error: `rpc_unreachable: ${String(err)}` }
+    return { ok: false, reason: `decode_error: ${String(err)}` }
   }
-  if (!res.ok) {
-    return { ok: false, permanent: res.status >= 400 && res.status < 500, error: `rpc_${res.status}` }
-  }
-  let body: any
-  try { body = await res.json() } catch { return { ok: false, permanent: false, error: 'rpc_bad_json' } }
-  if (body.error) {
-    const code = body.error.code
-    const message = body.error.message ?? 'rpc_error'
-    const permanentCodes = new Set([
-      -32602,  // invalid params (malformed tx)
-      -32003,  // BlockhashNotFound — for durable nonce, stale nonce
-      -32004,  // BlockNotAvailable
-    ])
-    // -32005 NodeUnhealthy is transient — exclude from the permanent set.
-    return {
-      ok: false,
-      permanent: permanentCodes.has(code),
-      error: `${code}:${message}`.slice(0, 500),
-    }
-  }
-  if (typeof body.result !== 'string') {
-    return { ok: false, permanent: false, error: 'rpc_no_signature' }
-  }
-  return { ok: true, signature: body.result }
 }
 
-type StatusResult = { confirmed: boolean; error?: string }
+function bytesToHex(arr: Uint8Array): string {
+  let s = ''
+  for (let i = 0; i < arr.length; i++) s += arr[i].toString(16).padStart(2, '0')
+  return s
+}
 
-async function getSignatureStatus(env: Env, signature: string): Promise<StatusResult> {
-  try {
-    const res = await fetch(env.HELIUS_RPC_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'getSignatureStatuses',
-        params: [[signature], { searchTransactionHistory: true }],
-      }),
-    })
-    if (!res.ok) return { confirmed: false }
-    const body: any = await res.json().catch(() => null)
-    const status = body?.result?.value?.[0]
-    if (!status) return { confirmed: false }
-    if (status.err) {
-      return { confirmed: false, error: `tx_error:${JSON.stringify(status.err).slice(0, 200)}` }
-    }
-    if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-      return { confirmed: true }
-    }
-    return { confirmed: false }
-  } catch {
-    return { confirmed: false }
-  }
+async function markFailed(
+  env: Env,
+  row: { id: string; wallet: string; market_ticker?: string },
+  code: FailureCode,
+  rawDetail: string,
+): Promise<void> {
+  await markOrderFailed(env, row, code, 'durable_nonce_legacy', rawDetail)
 }

@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react'
-import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud } from 'lucide-react'
+import React, { useMemo, useState } from 'react'
+import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud, Shield } from 'lucide-react'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useKeeperOrders } from '../hooks/useKeeperOrders'
+import { useKeeperApprovalOrder } from '../hooks/useKeeperApprovalOrder'
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -27,6 +28,9 @@ const STATUS_CONFIG = {
 export default function ActiveOrders({ marketId, marketTicker }) {
   const { orders: localOrders, cancelOrder: cancelLocal, cancelAll: cancelAllLocal, clearCompleted: clearLocalCompleted } = useConditionalOrders()
   const { orders: keeperOrders, cancelOrder: cancelKeeper, clearOrders: clearKeeper } = useKeeperOrders()
+  const { revokeApproval } = useKeeperApprovalOrder()
+  const [revoking, setRevoking] = useState(false)
+  const [revokeMsg, setRevokeMsg] = useState(null)
 
   // Tag orders with their backing source so cancelOrder routes to the right
   // store and the row can show a "cloud" badge for keeper-backed orders.
@@ -82,6 +86,32 @@ export default function ActiveOrders({ marketId, marketTicker }) {
     await clearKeeper({ marketTicker })
   }
 
+  // Approval-flow rows have an on-chain spl-token delegation rather than a
+  // pre-signed tx. Revoke wipes that delegation across every mint the
+  // user has active orders against — buys delegate USDC, sells delegate
+  // the outcome token. The hook also cancels pending keeper orders for
+  // those mints so the keeper doesn't try to fire post-revoke.
+  const activeApprovalOrders = relevantOrders.filter((o) =>
+    o.flow === 'approval' && (o.status === 'pending' || o.status === 'armed' || o.status === 'submitting')
+  )
+  const hasApprovalActive = activeApprovalOrders.length > 0
+  const onRevoke = async () => {
+    if (revoking) return
+    setRevoking(true)
+    setRevokeMsg(null)
+    try {
+      const mints = Array.from(new Set(
+        activeApprovalOrders.map((o) => o.inputMint).filter(Boolean),
+      ))
+      const res = await revokeApproval(mints.length > 0 ? { mints } : undefined)
+      setRevokeMsg(res?.signature ? 'Approval revoked' : 'Revoke sent')
+    } catch (err) {
+      setRevokeMsg(err?.message || 'Revoke failed')
+    } finally {
+      setRevoking(false)
+    }
+  }
+
   if (relevantOrders.length === 0) return null
 
   return (
@@ -98,6 +128,17 @@ export default function ActiveOrders({ marketId, marketTicker }) {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {hasApprovalActive && (
+            <button
+              onClick={onRevoke}
+              disabled={revoking}
+              className="flex items-center gap-1 text-[10px] text-terminal-yellow/80 hover:text-terminal-yellow transition-colors disabled:opacity-50"
+              title="Send an spl-token revoke to wipe the keeper's spending delegation. Active orders will fail at fire time after this."
+            >
+              <Shield size={10} />
+              {revoking ? 'Revoking…' : 'Revoke approval'}
+            </button>
+          )}
           {completedCount > 0 && (
             <button
               onClick={clearCompleted}
@@ -117,6 +158,12 @@ export default function ActiveOrders({ marketId, marketTicker }) {
           )}
         </div>
       </div>
+
+      {revokeMsg && (
+        <div className="px-4 py-1.5 text-[10px] font-mono text-terminal-muted border-b border-terminal-border">
+          {revokeMsg}
+        </div>
+      )}
 
       <div className="divide-y divide-terminal-border max-h-64 overflow-y-auto">
         {relevantOrders.map(order => {
@@ -142,6 +189,15 @@ export default function ActiveOrders({ marketId, marketTicker }) {
                     >
                       <Cloud size={10} />
                       keeper
+                    </span>
+                  )}
+                  {order.flow === 'approval' && (
+                    <span
+                      className="flex items-center gap-1 text-[10px] font-mono text-terminal-muted"
+                      title="Approval-flow order. The keeper holds an spl-token delegation up to your specified amount and signs the swap at fire time."
+                    >
+                      <Shield size={10} />
+                      delegated
                     </span>
                   )}
                   <span className={`text-[10px] font-bold uppercase ${

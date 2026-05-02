@@ -17,6 +17,7 @@ import noncesRoutes from './routes/durable-nonces'
 import { requireSession } from './middleware/auth'
 import { bytesToHex, randomBytes } from './lib/crypto'
 import { parseAllowlist, matchAllowedOrigin } from './lib/origin'
+import { getExecutorPubkey } from './lib/executor'
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
@@ -53,6 +54,20 @@ app.use('*', async (c, next) => {
 app.get('/health', (c) =>
   c.json({ ok: true, env: c.env.ENVIRONMENT, time: Date.now() }),
 )
+
+// Public executor pubkey — the delegate that frontends pass to spl-token
+// `approve` when building approval-flow orders. Returned on /config so the
+// browser doesn't have to know about it via env, and rotations propagate
+// to clients without redeploys.
+app.get('/config', (c) => {
+  let executor: string | null = null
+  try {
+    executor = getExecutorPubkey(c.env)
+  } catch (err) {
+    console.error('executor_unavailable', { error: String(err) })
+  }
+  return c.json({ executor })
+})
 
 app.route('/auth', authRoutes)
 app.use('/orders/*', requireSession)

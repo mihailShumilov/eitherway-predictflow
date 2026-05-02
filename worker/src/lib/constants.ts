@@ -33,3 +33,13 @@ export const CONFIRMATION_GIVE_UP_MS = 240_000
 // larger as obvious garbage.
 export const SIGNED_TX_MAX_BYTES = 1500
 export const SIGNED_TX_MIN_BYTES = 64
+
+// Approval-flow priority fee + compute-budget fallbacks. Used when DFlow's
+// /order response doesn't already include compute-budget instructions.
+export const APPROVAL_PRIORITY_FEE_LAMPORTS = '100000'
+export const APPROVAL_FALLBACK_CU_LIMIT = 400_000
+export const APPROVAL_FALLBACK_CU_PRICE_MICROLAMPORTS = 50_000
+
+// Solana raw tx hard ceiling — packets larger than this can't be
+// transported.
+export const SOLANA_TX_MAX_BYTES = 1232

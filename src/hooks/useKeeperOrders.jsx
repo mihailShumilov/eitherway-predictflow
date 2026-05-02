@@ -57,6 +57,15 @@ export function KeeperOrdersProvider({ children }) {
         fillPrice: o.fill_price ?? null,
         fillSignature: o.fill_signature ?? null,
         failureReason: o.failure_reason ?? null,
+        // Approval flow surfaces an spl-token delegation rather than a
+        // pre-signed tx — the UI shows "Revoke approval" instead of
+        // "Cancel" for these. Older rows lack `flow` so default to legacy.
+        flow: o.flow ?? 'durable_nonce_legacy',
+        delegatedAmountAtPlacement: o.delegated_amount_at_placement ?? null,
+        approvalSignature: o.approval_signature ?? null,
+        userInputAta: o.user_input_ata ?? null,
+        inputMint: o.input_mint ?? null,
+        outputMint: o.output_mint ?? null,
         createdAt: new Date(o.created_at).toISOString(),
         triggeredAt: o.triggered_at ? new Date(o.triggered_at).toISOString() : null,
         filledAt: o.filled_at ? new Date(o.filled_at).toISOString() : null,

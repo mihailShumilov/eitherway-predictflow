@@ -16,7 +16,7 @@ import { safeErrorMessage } from '../lib/errorMessage'
 import { isGateRejection } from '../lib/dflowErrors'
 import { runOrderPipeline } from '../lib/orderTxPipeline'
 import { isKeeperConfigured } from '../lib/keeperApi'
-import { useKeeperLimitOrder } from './useKeeperLimitOrder'
+import { useKeeperApprovalOrder } from './useKeeperApprovalOrder'
 import { calculateFee } from '../services/feeService'
 import {
   sweepFee, isSweepInCooldown, recordSweepFailure, recordSweepSuccess,
@@ -48,7 +48,7 @@ const submissionLocks = new Set()
 export function useTradeSubmit(market) {
   const { connected, connect, address, activeWallet } = useWallet()
   const { addOrder } = useConditionalOrders()
-  const { placeLimit: placeKeeperLimit } = useKeeperLimitOrder()
+  const { placeLimit: placeApprovalLimit } = useKeeperApprovalOrder()
   const { startStrategy } = useDCA()
   const { requireKyc, verifyWithServer, showModalWithReason } = useKyc()
   const { tier } = useUserTier()
@@ -282,30 +282,35 @@ export function useTradeSubmit(market) {
       return
     }
 
-    // Route all conditional order types through the keeper Worker when
-    // configured. Limit orders are buys (USDC → outcome); stop-loss and
-    // take-profit are sells (outcome → USDC). Direction selection lives
-    // in useKeeperLimitOrder; this hook just dispatches.
+    // All conditional order types go through the approval flow when the
+    // keeper is configured. The approval flow is wallet-agnostic (works
+    // with Phantom + Solflare + Backpack — none of them inject anything
+    // into a plain spl-token approve tx that would matter), so we no
+    // longer need the legacy durable-nonce path for any new orders. The
+    // legacy path stays in place server-side to drain in-flight rows.
+    //
+    // Direction matrix is handled inside placeApprovalLimit:
+    //   limit (BUY):       USDC → outcome
+    //   stop-loss (SELL):  outcome → USDC
+    //   take-profit (SELL):outcome → USDC
     if (
       (orderType === 'limit' || orderType === 'stop-loss' || orderType === 'take-profit') &&
       isKeeperConfigured()
     ) {
       setSubmitting(true)
       try {
-        const result = await placeKeeperLimit({
-          market,
-          side,
-          orderType,
+        const result = await placeApprovalLimit({
+          market, side, orderType,
           triggerPrice: tp,
           amountUsdc: parseFloat(amount),
         })
         track('conditional_order_placed', {
           marketId: market.id, orderType, side, amount: parseFloat(amount),
-          triggerPrice: tp, backend: 'keeper',
+          triggerPrice: tp, backend: 'keeper-approval',
         })
         setResult({ success: true, conditional: true, order: { ...result, orderType, triggerPrice: tp, amount: parseFloat(amount) } })
       } catch (err) {
-        reportError(err, { context: 'submitConditionalOrder/keeper', marketId: market.id })
+        reportError(err, { context: 'submitConditionalOrder/approval', marketId: market.id })
         setResult({ success: false, error: safeErrorMessage(err, 'Keeper placement failed') })
       } finally {
         setSubmitting(false)
@@ -333,7 +338,7 @@ export function useTradeSubmit(market) {
       marketId: market.id, orderType, side, amount: parseFloat(amount), triggerPrice: tp,
     })
     setResult({ success: true, conditional: true, order: newOrder })
-  }, [connected, connect, requireKyc, market, addOrder, placeKeeperLimit])
+  }, [connected, connect, requireKyc, market, addOrder, placeApprovalLimit])
 
   const submitDca = useCallback(({ side, amountPerBuy, frequency, totalBudget }) => {
     if (!connected) { connect(); return }

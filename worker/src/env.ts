@@ -21,6 +21,13 @@ export type Env = {
   SESSION_SIGNING_KEY: string   // 32-byte HMAC key for session tokens
   DFLOW_API_KEY: string
   HELIUS_RPC_URL: string
+
+  // Executor keypair (approval-flow). Base58-encoded 64-byte secret key
+  // (Solana standard "secret key" format = priv|pub). The keeper signs
+  // approval-flow swap transactions with this key. It IS a hot key, but
+  // its on-chain authority is bounded by per-user spl-token approve
+  // ceilings — see worker/src/lib/executor.ts for the exact trust model.
+  EXECUTOR_SECRET_KEY: string
 }
 
 // Hono context variables we set in middleware so handlers don't have to

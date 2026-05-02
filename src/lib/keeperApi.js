@@ -122,8 +122,27 @@ export async function placeOrder(payload) {
   return request('/orders', { method: 'POST', body: payload })
 }
 
+// Public config — exposes the keeper's executor pubkey for the
+// approval-flow path. The frontend uses this as the `delegate` argument to
+// spl-token `approve` when placing a limit order. Cached on first read.
+let _configCache = null
+export async function getConfig({ refresh = false } = {}) {
+  if (_configCache && !refresh) return _configCache
+  // /config doesn't require auth — request() requires a session by default,
+  // so we drop that requirement explicitly.
+  _configCache = await request('/config', { requireAuth: false })
+  return _configCache
+}
+
 export async function cancelOrder(id) {
   return request(`/orders/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+}
+
+// Bulk-cancel non-terminal approval-flow orders whose input mint is in
+// the supplied list. Used by the revoke flow so the keeper stops firing
+// against a wiped delegation.
+export async function cancelOrdersByMint({ mints }) {
+  return request('/orders/cancel-by-mint', { method: 'POST', body: { mints } })
 }
 
 // Hard-delete terminal-state orders (cancelled / failed / expired). When

@@ -58,7 +58,7 @@ function connectionFor(rpcUrl) {
 // behind our /api/rpc same-origin proxy) and the WS upgrade also wouldn't
 // be reachable through Vite's HTTP middleware in dev. Polling
 // getSignatureStatuses gets the same answer over plain JSON-RPC.
-async function waitForConfirmation(conn, signature, timeoutMs = 90_000) {
+export async function waitForConfirmation(conn, signature, timeoutMs = 90_000) {
   const start = Date.now()
   const POLL_MS = 1500
   const targets = new Set(['confirmed', 'finalized'])

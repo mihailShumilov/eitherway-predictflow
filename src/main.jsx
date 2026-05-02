@@ -1,3 +1,11 @@
+// `@solana/spl-token` (and parts of `@solana/web3.js`) reference Node's
+// `Buffer` at module-eval time. Vite externalizes the `buffer` builtin in
+// the browser, so we have to expose the polyfill globally before any
+// module that touches spl-token is loaded — otherwise lazy chunks like
+// MarketDetail crash with `ReferenceError: Buffer is not defined`.
+import { Buffer } from 'buffer'
+if (typeof globalThis.Buffer === 'undefined') globalThis.Buffer = Buffer
+
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'

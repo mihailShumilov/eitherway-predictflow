@@ -209,6 +209,7 @@ describe('armAndSubmit CAS', () => {
     await armAndSubmit(makeEnv(db), {
       id: '1', wallet: 'W', market_ticker: 'MKT', market_id: null,
       side: 'yes', order_type: 'limit', trigger_price: 0.5, status: 'pending',
+      flow: 'durable_nonce_legacy',
     }, 0.4)
     // First UPDATE is the CAS. Audit log INSERTs follow.
     expect(updates[0].sql).toMatch(/SET status = 'armed', triggered_at/)
@@ -234,6 +235,7 @@ describe('armAndSubmit CAS', () => {
     await armAndSubmit(makeEnv(db), {
       id: '1', wallet: 'W', market_ticker: 'MKT', market_id: null,
       side: 'yes', order_type: 'limit', trigger_price: 0.5, status: 'pending',
+      flow: 'durable_nonce_legacy',
     }, 0.4)
     expect(updates).toHaveLength(1)  // only the failed CAS, no audit follow-up
     expect(fetchSpy).not.toHaveBeenCalled()

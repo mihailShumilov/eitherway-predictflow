@@ -16,6 +16,7 @@ import {
   type Side,
 } from './triggers'
 import { submitOrder, checkSubmittedOrder } from './submitter'
+import { submitApprovalOrder } from './approvalSubmitter'
 import { SUBMITTING_REAP_MS } from './constants'
 
 export type PendingOrderRow = {
@@ -27,6 +28,7 @@ export type PendingOrderRow = {
   order_type: ConditionalOrderType
   trigger_price: number
   status: string
+  flow: 'durable_nonce_legacy' | 'approval'
 }
 
 // Reap rows whose SEND stalled (status='submitting' with NO
@@ -75,12 +77,14 @@ export async function pollPendingConfirmations(env: Env, marketTicker: string): 
   return rows.length
 }
 
-// Pending or armed — orders eligible for trigger re-evaluation.
+// Pending or armed — orders eligible for trigger re-evaluation. `flow`
+// determines which submitter the trigger handoff goes to (legacy: pre-built
+// signed tx; approval: server-built tx using the executor key).
 export async function fetchPendingOrders(env: Env, marketTicker: string): Promise<PendingOrderRow[]> {
   const result = await env.DB
     .prepare(
       `SELECT id, wallet, market_ticker, market_id, side, order_type,
-              trigger_price, status
+              trigger_price, status, flow
          FROM orders
         WHERE market_ticker = ? AND status IN ('pending','armed')`,
     )
@@ -129,10 +133,15 @@ export async function armAndSubmit(env: Env, order: PendingOrderRow, sidePrice: 
   })
   await incr(env, 'trigger_fired', { marketTicker: order.market_ticker })
 
-  // Hand off to the submitter — async, fire-and-forget. Errors are
-  // captured inside `submitOrder` and reflected in the row's status.
-  submitOrder(env, order.id).catch((err) => {
-    console.error('submit_order_unhandled', { id: order.id, error: String(err) })
+  // Hand off to the right submitter for this row's flow. Errors are
+  // captured inside the submitter and reflected in the row's status.
+  const handoff = order.flow === 'approval'
+    ? submitApprovalOrder(env, order.id)
+    : submitOrder(env, order.id)
+  handoff.catch((err) => {
+    console.error('submit_order_unhandled', {
+      id: order.id, flow: order.flow, error: String(err),
+    })
   })
 }
 

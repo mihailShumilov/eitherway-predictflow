@@ -5,14 +5,60 @@
 // the response code and the error code in the standard envelope.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+// vitest's source-loader for @solana/spl-token sometimes makes
+// findProgramAddressSync's curve check misbehave. Production runs the
+// real function correctly — we keep the route's contract intact and just
+// mock the ATA helper to a deterministic per-mint value here. Tests
+// pass the same string the route's call site receives.
+const fixtures = vi.hoisted(() => ({
+  // Deterministic seed-derived pubkeys (kept in sync with WALLET_KP).
+  USDC_MINT: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  USDC_ATA:  '2ne1mMzY9mQUhaGXu2DAZALo5QfWNKBSYmcm1QReM61w',
+  YES_MINT:  '6JhaGdekBjU2RfiYWSjYdQAibx4LfSfTNFEeMUHnUVz7',
+  YES_ATA:   '4VZjdPrxhskbtynPYa5GFPvRGQRsXcCXymsbU5HzD8nu',
+  NO_MINT:   '2ru5PcgeQzxF7QZYwQgDkG2K13PRqyigVw99zMYg8eML',
+  NO_ATA:    '8xLcDDoAcgWB59tH4LEjP7sfYCgWvWWadrW5wwBe6kDC',
+}))
+
+vi.mock('@solana/spl-token', async (orig) => {
+  const actual: any = await orig()
+  // Build a fake PublicKey-shaped return by reusing the real PublicKey class
+  // — but route through a string so we don't trigger the curve math that
+  // breaks in this environment. We provide just the toBase58() method that
+  // the route consumes.
+  const fake = (s: string) => ({ toBase58: () => s })
+  return {
+    ...actual,
+    getAssociatedTokenAddressSync: vi.fn((mint: any) => {
+      const m = String(mint?.toBase58?.() ?? mint)
+      if (m === fixtures.USDC_MINT) return fake(fixtures.USDC_ATA)
+      if (m === fixtures.YES_MINT) return fake(fixtures.YES_ATA)
+      if (m === fixtures.NO_MINT) return fake(fixtures.NO_ATA)
+      throw new Error(`unmocked ATA mint: ${m}`)
+    }),
+  }
+})
+
 import app from '../index'
 import { decrypt } from '../lib/encryption'
 import { mintSessionToken } from '../lib/session'
 import { bytesToBase64 } from '../lib/crypto'
+import { Keypair } from '@solana/web3.js'
 
 const SESSION_SIGNING_KEY = bytesToBase64(new Uint8Array(32).fill(0x55))
 const SIGNED_TX_KEY = bytesToBase64(new Uint8Array(32).fill(0x77))
-const WALLET = 'AbC1' + '1'.repeat(40)  // 44 base58 chars
+function kpFromSeed(byte: number): Keypair {
+  return Keypair.fromSeed(new Uint8Array(32).fill(byte))
+}
+const WALLET_KP = kpFromSeed(0x10)
+const WALLET = WALLET_KP.publicKey.toBase58()
+const USDC_MINT_TEST = fixtures.USDC_MINT
+const YES_MINT = fixtures.YES_MINT
+const NO_MINT = fixtures.NO_MINT
+const FAKE_SIG = '1'.repeat(88)
+const USDC_ATA = fixtures.USDC_ATA
+const YES_ATA = fixtures.YES_ATA
 
 function mintToken(wallet = WALLET, sid = 'sid-1', ttlMs = 60_000) {
   return mintSessionToken({
@@ -70,7 +116,7 @@ function makeEnv(overrides: Partial<any> = {}): any {
     DFLOW_TRADE_BASE: '',
     DFLOW_WS_URL: '',
     SOLANA_NETWORK: 'mainnet',
-    USDC_MINT: 'USDC',
+    USDC_MINT: USDC_MINT_TEST,
     ALLOWED_ORIGIN: 'http://localhost:5173',
     SESSION_TTL_SECONDS: '600',
     SIGNED_TX_KEY,
@@ -110,8 +156,8 @@ const minimalValidBody = () => ({
   orderType: 'limit',
   triggerPrice: 0.5,
   amountUsdc: 1,
-  yesMint: WALLET,  // any base58 32-byte string passes isValidPubkey
-  noMint: WALLET,
+  yesMint: YES_MINT,
+  noMint: NO_MINT,
   signedTxBase64: bytesToBase64(new Uint8Array(200).fill(1)),
   durableNoncePubkey: WALLET,
   durableNonceValue: 'NONCE-VAL',
@@ -274,5 +320,114 @@ describe('POST /orders — validation matrix', () => {
     const iv = binds[12]
     const decrypted = await decrypt({ ciphertext: new Uint8Array(cipher), iv: new Uint8Array(iv) }, SIGNED_TX_KEY)
     expect(decrypted.length).toBe(200)  // matches minimalValidBody payload
+  })
+})
+
+// ---- Approval-flow validation ----------------------------------------
+
+const minimalApprovalBody = () => ({
+  flow: 'approval',
+  marketTicker: 'BTCD-25DEC0313-T92749.99',
+  side: 'yes',
+  orderType: 'limit',
+  triggerPrice: 0.5,
+  amountUsdc: 1,
+  yesMint: YES_MINT,
+  noMint: NO_MINT,
+  approvalSignature: FAKE_SIG,
+  delegatedAmountAtPlacement: 1_000_000,
+  userInputAta: USDC_ATA,
+  inputMint: USDC_MINT_TEST,
+  outputMint: YES_MINT,
+})
+
+describe('POST /orders flow=approval validation', () => {
+  it('201 on a valid approval body — persists row with flow=approval and no signed_tx', async () => {
+    const insertedOrders: any[] = []
+    const env = makeEnv()
+    env.DB = makeDB({ insertedOrders })
+    const res = await postOrder(env, minimalApprovalBody())
+    expect(res.status).toBe(201)
+    const j: any = await res.json()
+    expect(j.id).toBeTruthy()
+    expect(j.status).toBe('pending')
+    // Two INSERTs: orders + token_approvals (best-effort ledger). The
+    // first is the orders row.
+    expect(insertedOrders.length).toBeGreaterThanOrEqual(1)
+    const orderBinds = insertedOrders[0]
+    // Approval-flow INSERT order:
+    //   id, wallet, market_ticker, market_id, event_ticker,
+    //   side, order_type, trigger_price, amount_usdc, yes_mint, no_mint,
+    //   flow, approval_signature, delegated_amount_at_placement,
+    //   user_input_ata, input_mint, output_mint, created_at, updated_at
+    expect(orderBinds[11]).toBe('approval')
+    expect(orderBinds[12]).toBe(FAKE_SIG)
+    expect(orderBinds[13]).toBe(1_000_000)
+  })
+
+  it('400 validation_failed when approvalSignature missing', async () => {
+    const env = makeEnv()
+    const body = { ...minimalApprovalBody() } as any
+    delete body.approvalSignature
+    const res = await postOrder(env, body)
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error).toBe('validation_failed')
+    expect((j.detail as string[]).some((d) => d.includes('approvalSignature'))).toBe(true)
+  })
+
+  it('400 validation_failed when approvalSignature is not base58 88-char', async () => {
+    const env = makeEnv()
+    const res = await postOrder(env, { ...minimalApprovalBody(), approvalSignature: 'too-short' })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error).toBe('validation_failed')
+  })
+
+  it('400 validation_failed when userInputAta is not the wallet+inputMint ATA', async () => {
+    const env = makeEnv()
+    const wrongAta = Keypair.generate().publicKey.toBase58()
+    const res = await postOrder(env, { ...minimalApprovalBody(), userInputAta: wrongAta })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error).toBe('validation_failed')
+  })
+
+  it('400 validation_failed when inputMint mismatches direction matrix (limit BUY must be USDC in)', async () => {
+    const env = makeEnv()
+    // Limit BUY: input must be USDC. Swap input/output to violate.
+    const res = await postOrder(env, {
+      ...minimalApprovalBody(),
+      inputMint: YES_MINT,
+      outputMint: USDC_MINT_TEST,
+      userInputAta: YES_ATA,
+    })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error).toBe('validation_failed')
+  })
+
+  it('400 validation_failed when delegatedAmountAtPlacement is zero', async () => {
+    const env = makeEnv()
+    const res = await postOrder(env, { ...minimalApprovalBody(), delegatedAmountAtPlacement: 0 })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error).toBe('validation_failed')
+  })
+
+  it('400 validation_failed when userInputAta is not a valid pubkey', async () => {
+    const env = makeEnv()
+    const res = await postOrder(env, { ...minimalApprovalBody(), userInputAta: 'NOT-A-PUBKEY' })
+    expect(res.status).toBe(400)
+    const j: any = await res.json()
+    expect(j.error).toBe('validation_failed')
+  })
+
+  it('does NOT require signedTxBase64 / durableNonce on approval flow', async () => {
+    // Confirm approval flow doesn't fall through to legacy required-fields.
+    const env = makeEnv()
+    env.DB = makeDB({})  // no nonceRow; legacy path would 400 nonce_not_registered
+    const res = await postOrder(env, minimalApprovalBody())
+    expect(res.status).toBe(201)
   })
 })
