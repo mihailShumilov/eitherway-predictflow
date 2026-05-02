@@ -35,7 +35,10 @@ import {
 import { sendRawTransaction, simulateTransaction } from './heliusRpc'
 import { markOrderFailed } from './orderState'
 import { classifyDflowHttp, type FailureCode } from './failureReason'
-import { applyComputeUnitPriceFloor, extractComputeUnitPrice } from './priorityFee'
+import {
+  applyComputeUnitLimitFloor, applyComputeUnitPriceFloor,
+  extractComputeUnitPrice,
+} from './priorityFee'
 import { deriveAtaCandidates, readSimulatedTokenAmount } from './simulation'
 
 type ApprovalOrderRow = {
@@ -422,9 +425,26 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     ))
   }
 
+  // DFlow's SetComputeUnitLimit is sized for THEIR instructions only;
+  // each sweep TransferChecked we append consumes ~6,300 CU and would
+  // push the tx past the limit, surfacing as ProgramFailedToComplete on
+  // chain. Bump the CU limit using simulated base consumption + a fixed
+  // per-sweep budget + safety margin so the floor scales with the actual
+  // route cost rather than guessing.
+  const SWEEP_IX_CU_BUDGET = 7_000
+  const CU_SAFETY_MARGIN = 5_000
+  const finalCbIxs = sweepIxs.length === 0
+    ? enforcedCbIxs
+    : applyComputeUnitLimitFloor(
+        enforcedCbIxs,
+        (sim.unitsConsumed ?? APPROVAL_FALLBACK_CU_LIMIT)
+          + sweepIxs.length * SWEEP_IX_CU_BUDGET
+          + CU_SAFETY_MARGIN,
+      )
+
   const finalInstructions = sweepIxs.length === 0
     ? baseInstructions
-    : [...baseInstructions, ...sweepIxs]
+    : [advanceIx, ...finalCbIxs, transferIx, ...swapIxs, ...sweepIxs]
 
   const finalMessage = new TransactionMessage({
     payerKey: executor.publicKey,
