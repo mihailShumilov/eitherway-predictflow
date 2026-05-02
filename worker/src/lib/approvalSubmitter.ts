@@ -40,6 +40,7 @@ import {
   extractComputeUnitPrice,
 } from './priorityFee'
 import { deriveAtaCandidates, readSimulatedTokenAmount } from './simulation'
+import { encrypt } from './encryption'
 
 type ApprovalOrderRow = {
   id: string
@@ -500,9 +501,31 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     return
   }
 
+  // Encrypt the signed tx and persist alongside fill_signature so
+  // checkSubmittedOrder can re-broadcast on subsequent alarm cycles
+  // until the tx lands or CONFIRMATION_GIVE_UP_MS expires. Helius's
+  // built-in maxRetries: 5 only covers ~150s — without this loop, txs
+  // that need longer to land just time out as confirmation_timeout
+  // even though the durable nonce is still valid.
+  let signedEnc: { iv: Uint8Array; ciphertext: Uint8Array } | null = null
+  try {
+    signedEnc = await encrypt(signedBytes, env.SIGNED_TX_KEY)
+  } catch (err) {
+    // Encryption failures shouldn't block broadcast persistence — log
+    // and continue. The tx already broadcast successfully; we just
+    // won't have re-broadcast safety net for this fire.
+    console.error('approval_submit_encrypt_failed', { id: orderId, error: String(err) })
+  }
+
   await env.DB
-    .prepare(`UPDATE orders SET fill_signature = ?, updated_at = ? WHERE id = ?`)
-    .bind(broadcast.signature, Date.now(), orderId)
+    .prepare(`UPDATE orders SET fill_signature = ?, signed_tx_enc = ?, signed_tx_iv = ?, updated_at = ? WHERE id = ?`)
+    .bind(
+      broadcast.signature,
+      signedEnc ? signedEnc.ciphertext : null,
+      signedEnc ? signedEnc.iv : null,
+      Date.now(),
+      orderId,
+    )
     .run()
   console.log('approval_submit_broadcast', { id: orderId, signature: broadcast.signature })
   await audit(env, {
