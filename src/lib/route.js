@@ -27,7 +27,14 @@ export function parseHash(hash) {
   }
 
   if (segments[0] === 'market' && segments[1]) {
-    const route = { page: 'explore', marketTicker: decodeURIComponent(segments[1]) }
+    // `from` lets a non-explore page (e.g. portfolio) be the underlying
+    // page when a market detail is opened, so closing returns there
+    // instead of dropping the user on explore.
+    const from = params.get('from')
+    const route = {
+      page: from && VALID_PAGES.has(from) ? from : 'explore',
+      marketTicker: decodeURIComponent(segments[1]),
+    }
     const side = params.get('side')
     if (VALID_SIDES.has(side)) route.side = side
     // Carry the originating filter so closing the market returns to it.
@@ -51,12 +58,13 @@ export function parseHash(hash) {
   return { page: 'explore' }
 }
 
-export function formatHash({ page = 'explore', marketTicker, side, category, subcategory } = {}) {
+export function formatHash({ page = 'explore', marketTicker, side, category, subcategory, from } = {}) {
   if (marketTicker) {
     const params = new URLSearchParams()
     if (VALID_SIDES.has(side)) params.set('side', side)
     if (category && category !== 'All') params.set('cat', category)
     if (subcategory) params.set('sub', subcategory)
+    if (from && VALID_PAGES.has(from) && from !== 'explore') params.set('from', from)
     const qs = params.toString()
     return `#/market/${encodeURIComponent(marketTicker)}${qs ? `?${qs}` : ''}`
   }

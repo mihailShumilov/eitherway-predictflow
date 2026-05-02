@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { usePortfolio } from '../hooks/usePortfolio'
+import { useRoute } from '../hooks/useRoute'
 import { SOLANA_NETWORK } from '../config/env'
 
 const IS_MAINNET = (SOLANA_NETWORK || '').toLowerCase() === 'mainnet'
@@ -220,7 +221,7 @@ function SettlementBadge({ won }) {
   )
 }
 
-function PositionsTable({ positions }) {
+function PositionsTable({ positions, onOpenMarket }) {
   if (positions.length === 0) {
     return (
       <div className="bg-terminal-surface border border-terminal-border rounded-lg p-8 text-center">
@@ -257,8 +258,31 @@ function PositionsTable({ positions }) {
               const isProfit = pnlKnown && p.pnl > 0
               const isLoss = pnlKnown && p.pnl < 0
               const settled = !!p.settled
+              const canOpen = !!(onOpenMarket && p.ticker)
+              const handleOpen = canOpen ? () => onOpenMarket(p) : undefined
+              const handleKey = canOpen
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onOpenMarket(p)
+                    }
+                  }
+                : undefined
               return (
-                <tr key={`${p.mint || p.marketId}-${i}`} className="hover:bg-terminal-card/50 transition-colors">
+                <tr
+                  key={`${p.mint || p.marketId}-${i}`}
+                  onClick={handleOpen}
+                  onKeyDown={handleKey}
+                  role={canOpen ? 'button' : undefined}
+                  tabIndex={canOpen ? 0 : undefined}
+                  title={canOpen ? 'Open market' : undefined}
+                  aria-label={canOpen ? `Open market: ${p.question}` : undefined}
+                  className={`transition-colors ${
+                    canOpen
+                      ? 'cursor-pointer hover:bg-terminal-card focus:bg-terminal-card focus:outline-none'
+                      : 'hover:bg-terminal-card/50'
+                  }`}
+                >
                   <td className="px-4 py-3 max-w-xs">
                     <div className="truncate text-terminal-text">{p.question}</div>
                     {p.eventTitle && <div className="text-[10px] text-terminal-muted truncate">{p.eventTitle}</div>}
@@ -323,6 +347,11 @@ export default function Portfolio() {
   const { orders } = useConditionalOrders()
   const { orders: keeperOrders } = useKeeperOrders()
   const { strategies: dcaStrategies, stopStrategy } = useDCA()
+  const { navigate } = useRoute()
+  const handleOpenMarket = (p) => {
+    if (!p?.ticker) return
+    navigate({ marketTicker: p.ticker, side: p.side, from: 'portfolio' })
+  }
   // Either backend may hold orders (keeper for production limit/SL/TP, local
   // for the legacy in-memory fallback). The empty-state gate has to look at
   // both — otherwise a user with only keeper orders sees "No conditional
@@ -427,7 +456,7 @@ export default function Portfolio() {
         </div>
       ) : (
         <>
-          <PositionsTable positions={positions} />
+          <PositionsTable positions={positions} onOpenMarket={handleOpenMarket} />
           <SettlementTimeline positions={positions} />
         </>
       )}

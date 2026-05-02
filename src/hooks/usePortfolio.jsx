@@ -426,6 +426,7 @@ export function usePortfolio() {
             source: 'wallet',
             mint,
             marketId: m.marketId,
+            ticker: m.ticker || null,
             question: m.question,
             eventTitle: m.eventTitle,
             category: m.category,
