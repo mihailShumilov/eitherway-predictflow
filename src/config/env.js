@@ -63,6 +63,11 @@ export const SOLANA_RPC_ENDPOINTS = list('VITE_SOLANA_RPC_ENDPOINTS', [
 ]).map(absolutize)
 export const USDC_MINT = str('VITE_USDC_MINT', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
 export const SPL_TOKEN_PROGRAM = str('VITE_SPL_TOKEN_PROGRAM', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+// Token-2022. DFlow's prediction-market outcome mints are issued under this
+// program (e.g. BavupMa3RQTEQepU8KrUZeE7TbuaxCSauCifA9SxQWQX). Without
+// fetching this program's accounts too, outcome holdings are invisible to
+// the portfolio query.
+export const TOKEN_2022_PROGRAM = str('VITE_TOKEN_2022_PROGRAM', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
 
 // KYC / Proof
 export const PROOF_URL = str('VITE_PROOF_URL', 'https://www.dflow.net/proof')
@@ -113,6 +118,7 @@ export default {
   SOLANA_RPC_ENDPOINTS,
   USDC_MINT,
   SPL_TOKEN_PROGRAM,
+  TOKEN_2022_PROGRAM,
   PROOF_URL,
   KYC_CHECK_URL,
   SENTRY_DSN,

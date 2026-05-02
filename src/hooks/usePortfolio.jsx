@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useWallet } from './useWallet'
-import { DFLOW_PROXY_BASE, SPL_TOKEN_PROGRAM, SOLANA_RPC_ENDPOINTS } from '../config/env'
+import { DFLOW_PROXY_BASE, SPL_TOKEN_PROGRAM, TOKEN_2022_PROGRAM, SOLANA_RPC_ENDPOINTS } from '../config/env'
 import { fetchWithRetry } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
 import { normalizeMarket } from '../lib/normalize'
@@ -22,21 +22,40 @@ async function rpcCall(url, method, params) {
   return data.result
 }
 
+// Fetch SPL Token + Token-2022 holdings in parallel and concatenate.
+// DFlow's prediction-market outcome mints are issued under Token-2022;
+// without querying both programs the user's outcome holdings are
+// invisible to the portfolio.
 async function getTokenAccounts(address) {
-  let lastErr
-  for (const rpc of SOLANA_RPCS) {
-    try {
-      const result = await rpcCall(rpc, 'getTokenAccountsByOwner', [
-        address,
-        { programId: SPL_TOKEN_PROGRAM },
-        { encoding: 'jsonParsed' },
-      ])
-      return result?.value || []
-    } catch (e) {
-      lastErr = e
+  const fetchProgram = async (programId) => {
+    let lastErr
+    for (const rpc of SOLANA_RPCS) {
+      try {
+        const result = await rpcCall(rpc, 'getTokenAccountsByOwner', [
+          address,
+          { programId },
+          { encoding: 'jsonParsed' },
+        ])
+        return result?.value || []
+      } catch (e) {
+        lastErr = e
+      }
     }
+    throw lastErr || new Error('No RPC reachable')
   }
-  throw lastErr || new Error('No RPC reachable')
+  // Fetch both programs in parallel; tolerate one program failing as long
+  // as the other returns (a wallet without Token-2022 holdings is the
+  // common case and shouldn't break the legacy SPL Token query, and vice
+  // versa for a wallet that only holds Token-2022 outcomes).
+  const settled = await Promise.allSettled([
+    fetchProgram(SPL_TOKEN_PROGRAM),
+    fetchProgram(TOKEN_2022_PROGRAM),
+  ])
+  const successes = settled.filter(r => r.status === 'fulfilled')
+  if (successes.length === 0) {
+    throw settled[0].reason ?? new Error('No RPC reachable')
+  }
+  return successes.flatMap(r => r.value)
 }
 
 // outcome_mints payload may be an array of strings, array of objects, or wrapped { mints|data: [...] }
@@ -424,6 +443,16 @@ export function usePortfolio() {
         buildOnchainEntries(address, DFLOW_BASE),
       ])
 
+      // outcome_mints is now a *hint* rather than a filter. Some markets
+      // (esp. book-based / newer ones) aren't indexed in DFlow's
+      // outcome_mints response yet but the user can still hold their
+      // outcome tokens. The authoritative gate below is `market/by-mint`:
+      // any held token whose by-mint lookup succeeds is a real position;
+      // unrelated tokens (USDC, SOL, random spl tokens) get 404 there
+      // and drop out of the resolved set naturally. parseOutcomeMints
+      // is still called so the variable shape is preserved for any future
+      // logic that wants to short-circuit a positive match.
+      // eslint-disable-next-line no-unused-vars
       const outcomeIndex = parseOutcomeMints(outcomeRaw)
       const held = tokenAccounts
         .map(acct => {
@@ -433,7 +462,10 @@ export function usePortfolio() {
           return mint && amount > 0 ? { mint, amount } : null
         })
         .filter(Boolean)
-        .filter(t => outcomeIndex.has(t.mint))
+        // Pre-filter: drop the user's USDC ATA (and the underlying mint
+        // for any token-vehicle stable) so we don't waste an API call
+        // looking up a mint we know isn't a prediction-market outcome.
+        .filter(t => t.mint !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
 
       if (held.length === 0) {
         // No outcome tokens in wallet — fall back to localStorage positions
