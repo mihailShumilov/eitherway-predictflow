@@ -14,8 +14,9 @@
 // delegate === executor, delegated_amount >= atomic) before signing.
 
 import {
-  Connection, PublicKey, SystemProgram, Transaction, TransactionMessage,
-  VersionedTransaction, ComputeBudgetProgram, Keypair, NONCE_ACCOUNT_LENGTH,
+  Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction,
+  TransactionMessage, VersionedTransaction, ComputeBudgetProgram, Keypair,
+  NONCE_ACCOUNT_LENGTH,
 } from '@solana/web3.js'
 import {
   getAssociatedTokenAddressSync, createTransferCheckedInstruction,
@@ -31,10 +32,11 @@ import {
   APPROVAL_PRIORITY_FEE_LAMPORTS, APPROVAL_FALLBACK_CU_LIMIT,
   APPROVAL_MIN_CU_PRICE_MICROLAMPORTS, SOLANA_TX_MAX_BYTES,
 } from './constants'
-import { sendRawTransaction } from './heliusRpc'
+import { sendRawTransaction, simulateTransaction } from './heliusRpc'
 import { markOrderFailed } from './orderState'
 import { classifyDflowHttp, type FailureCode } from './failureReason'
 import { applyComputeUnitPriceFloor, extractComputeUnitPrice } from './priorityFee'
+import { deriveAtaCandidates, readSimulatedTokenAmount } from './simulation'
 
 type ApprovalOrderRow = {
   id: string
@@ -265,18 +267,133 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
       ]
     : applyComputeUnitPriceFloor(cbIxs, APPROVAL_MIN_CU_PRICE_MICROLAMPORTS)
 
-  const newMessage = new TransactionMessage({
+  // Build the base tx (advance + cb + pull + DFlow swap) and sign it for
+  // simulation. The same byte-stream goes back through compileToV0Message
+  // when we re-build with sweep/commission instructions appended.
+  const baseInstructions: TransactionInstruction[] = [
+    advanceIx,
+    ...enforcedCbIxs,
+    transferIx,
+    ...swapIxs,
+  ]
+  const baseMessage = new TransactionMessage({
     payerKey: executor.publicKey,
     recentBlockhash: nonceValue,
-    instructions: [
-      advanceIx,
-      ...enforcedCbIxs,
-      transferIx,
-      ...swapIxs,
-    ],
+    instructions: baseInstructions,
   }).compileToV0Message(altAccounts)
+  const baseTx = new VersionedTransaction(baseMessage)
+  baseTx.sign([executor])
 
-  const recomposed = new VersionedTransaction(newMessage)
+  // Pre-broadcast simulation gate — verifies the swap will actually mint
+  // outcome tokens to the user and tells us how much USDC remains on
+  // the executor for sweeping. Without this, DFlow returning a non-swap
+  // tx (e.g. InitUserOrderEscrow on book-based markets) would silently
+  // consume user funds with no detectable position.
+  const outcomeAtas = deriveAtaCandidates(row.output_mint, row.wallet)
+  const simAddresses = [
+    outcomeAtas.legacy.toBase58(),
+    outcomeAtas.token2022.toBase58(),
+    executorATA.toBase58(),
+  ]
+  const sim = await simulateTransaction(env, baseTx.serialize(), simAddresses)
+  if (!sim.ok) {
+    console.error('approval_simulate_rpc_failed', {
+      id: orderId, error: sim.error, permanent: sim.permanent,
+    })
+    if (sim.permanent) {
+      await fail(env, row, 'simulation_failed', sim.error)
+    } else {
+      // Transient — flip back to armed so reaper retries on next tick.
+      await env.DB
+        .prepare(`UPDATE orders SET status = 'armed', updated_at = ? WHERE id = ? AND status = 'submitting'`)
+        .bind(Date.now(), orderId)
+        .run()
+      await incr(env, 'submit_failed_transient', { marketTicker: row.market_ticker, flow: 'approval' })
+    }
+    return
+  }
+  if (sim.err) {
+    console.error('approval_simulate_tx_error', {
+      id: orderId, err: sim.err, logs: sim.logs.slice(-10),
+    })
+    await fail(env, row, 'tx_error', JSON.stringify(sim.err).slice(0, 200))
+    return
+  }
+
+  // Whichever ATA candidate (legacy SPL Token vs Token-2022) shows a
+  // non-zero balance is the real outcome token account.
+  const outcomeLegacy = readSimulatedTokenAmount(sim.accounts[0])
+  const outcome2022 = readSimulatedTokenAmount(sim.accounts[1])
+  const outcomeAmount = outcomeLegacy > 0n ? outcomeLegacy : outcome2022
+  const executorPostUsdc = readSimulatedTokenAmount(sim.accounts[2])
+
+  if (outcomeAmount === 0n) {
+    console.error('approval_simulate_not_a_swap', {
+      id: orderId,
+      market: row.market_ticker,
+      outputMint: row.output_mint,
+      executorPostUsdc: Number(executorPostUsdc),
+    })
+    await fail(env, row, 'not_a_swap',
+      `dflow_returned_non_swap_tx executor_post_usdc=${executorPostUsdc}`)
+    return
+  }
+
+  // Sweep + commission split:
+  //   residual         = USDC sitting on the executor after DFlow's ixs
+  //   desiredCommission = amount_usdc * COMMISSION_BPS / 10000
+  //   commission        = min(desiredCommission, residual)
+  //   userRefund        = residual - commission
+  //
+  // Commission comes OUT of residual (not on top of the user's spend), so
+  // a high-residual fire pays full fee + refund; a low-residual fire pays
+  // capped fee + zero refund. Both env vars must be set for commission
+  // to apply; otherwise residual goes entirely back to the user.
+  const commissionBpsRaw = parseInt(env.COMMISSION_BPS ?? '0', 10)
+  const commissionBps = Number.isFinite(commissionBpsRaw) && commissionBpsRaw > 0 ? commissionBpsRaw : 0
+  const treasuryAtaStr = env.COMMISSION_RECIPIENT_USDC_ATA ?? ''
+  const commissionConfigured = commissionBps > 0 && treasuryAtaStr.length > 0
+
+  const desiredCommission = commissionConfigured
+    ? (atomicInput.atomic * BigInt(commissionBps)) / 10000n
+    : 0n
+  const commissionAmount = desiredCommission > executorPostUsdc
+    ? executorPostUsdc
+    : desiredCommission
+  const userRefundAmount = executorPostUsdc - commissionAmount
+
+  const sweepIxs: TransactionInstruction[] = []
+  if (commissionAmount > 0n) {
+    sweepIxs.push(createTransferCheckedInstruction(
+      executorATA,
+      inputMint,
+      new PublicKey(treasuryAtaStr),
+      executor.publicKey,
+      commissionAmount,
+      USDC_DECIMALS,
+    ))
+  }
+  if (userRefundAmount > 0n) {
+    sweepIxs.push(createTransferCheckedInstruction(
+      executorATA,
+      inputMint,
+      userATA,
+      executor.publicKey,
+      userRefundAmount,
+      USDC_DECIMALS,
+    ))
+  }
+
+  const finalInstructions = sweepIxs.length === 0
+    ? baseInstructions
+    : [...baseInstructions, ...sweepIxs]
+
+  const finalMessage = new TransactionMessage({
+    payerKey: executor.publicKey,
+    recentBlockhash: nonceValue,
+    instructions: finalInstructions,
+  }).compileToV0Message(altAccounts)
+  const recomposed = new VersionedTransaction(finalMessage)
   recomposed.sign([executor])
 
   const signedBytes = recomposed.serialize()
@@ -297,6 +414,10 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     dflowCuPrice: dflowCuPrice === null ? null : Number(dflowCuPrice),
     effectiveCuPrice: effectiveCuPrice === null ? null : Number(effectiveCuPrice),
     floorApplied: dflowCuPrice === null || (effectiveCuPrice !== null && dflowCuPrice < effectiveCuPrice),
+    outcomeAmount: Number(outcomeAmount),
+    executorResidual: Number(executorPostUsdc),
+    commission: Number(commissionAmount),
+    userRefund: Number(userRefundAmount),
   })
 
   const broadcast = await sendRawTransaction(env, signedBytes)
