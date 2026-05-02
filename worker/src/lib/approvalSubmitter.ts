@@ -29,11 +29,12 @@ import { incr } from './metrics'
 import { loadExecutorKeypair } from './executor'
 import {
   APPROVAL_PRIORITY_FEE_LAMPORTS, APPROVAL_FALLBACK_CU_LIMIT,
-  APPROVAL_FALLBACK_CU_PRICE_MICROLAMPORTS, SOLANA_TX_MAX_BYTES,
+  APPROVAL_MIN_CU_PRICE_MICROLAMPORTS, SOLANA_TX_MAX_BYTES,
 } from './constants'
 import { sendRawTransaction } from './heliusRpc'
 import { markOrderFailed } from './orderState'
 import { classifyDflowHttp, type FailureCode } from './failureReason'
+import { applyComputeUnitPriceFloor, extractComputeUnitPrice } from './priorityFee'
 
 type ApprovalOrderRow = {
   id: string
@@ -252,20 +253,24 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
   const dflowIxs = decompiled.instructions
   const cbIxs = dflowIxs.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId))
   const swapIxs = dflowIxs.filter((ix) => !ix.programId.equals(ComputeBudgetProgram.programId))
-  const fallbackPriorityIxs = cbIxs.length === 0
+  // Enforce a SetComputeUnitPrice floor so DFlow's quote can't undercut
+  // what's needed to land under mainnet congestion. When DFlow's quote
+  // contains no compute-budget instructions at all, also inject a CU
+  // limit fallback (DFlow normally sets one, but we have to assume some
+  // limit if it didn't).
+  const enforcedCbIxs = cbIxs.length === 0
     ? [
         ComputeBudgetProgram.setComputeUnitLimit({ units: APPROVAL_FALLBACK_CU_LIMIT }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: APPROVAL_FALLBACK_CU_PRICE_MICROLAMPORTS }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: APPROVAL_MIN_CU_PRICE_MICROLAMPORTS }),
       ]
-    : []
+    : applyComputeUnitPriceFloor(cbIxs, APPROVAL_MIN_CU_PRICE_MICROLAMPORTS)
 
   const newMessage = new TransactionMessage({
     payerKey: executor.publicKey,
     recentBlockhash: nonceValue,
     instructions: [
       advanceIx,
-      ...cbIxs,
-      ...fallbackPriorityIxs,
+      ...enforcedCbIxs,
       transferIx,
       ...swapIxs,
     ],
@@ -280,9 +285,18 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     return
   }
 
+  // BigInt can't serialize through console.log's JSON path; coerce to
+  // Number. CU prices fit comfortably under 2^53.
+  const dflowCuPrice = extractComputeUnitPrice(cbIxs)
+  const effectiveCuPrice = extractComputeUnitPrice(enforcedCbIxs)
   await incr(env, 'submit_attempted', { marketTicker: row.market_ticker, flow: 'approval' })
   console.log('approval_submit_attempt', {
-    id: orderId, marketTicker: row.market_ticker, txBytes: signedBytes.length,
+    id: orderId,
+    marketTicker: row.market_ticker,
+    txBytes: signedBytes.length,
+    dflowCuPrice: dflowCuPrice === null ? null : Number(dflowCuPrice),
+    effectiveCuPrice: effectiveCuPrice === null ? null : Number(effectiveCuPrice),
+    floorApplied: dflowCuPrice === null || (effectiveCuPrice !== null && dflowCuPrice < effectiveCuPrice),
   })
 
   const broadcast = await sendRawTransaction(env, signedBytes)

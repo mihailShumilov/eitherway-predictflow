@@ -34,11 +34,23 @@ export const CONFIRMATION_GIVE_UP_MS = 240_000
 export const SIGNED_TX_MAX_BYTES = 1500
 export const SIGNED_TX_MIN_BYTES = 64
 
-// Approval-flow priority fee + compute-budget fallbacks. Used when DFlow's
-// /order response doesn't already include compute-budget instructions.
+// Approval-flow priority fee + compute-budget tunables.
+//
+// APPROVAL_PRIORITY_FEE_LAMPORTS is a hint to DFlow's /order — it
+// influences the priority fee DFlow embeds in its quote, but DFlow may
+// pick a lower value depending on its routing logic.
+//
+// APPROVAL_FALLBACK_CU_LIMIT is used only when DFlow's quote contains no
+// SetComputeUnitLimit (rare); DFlow's per-route CU sizing is preferred.
+//
+// APPROVAL_MIN_CU_PRICE_MICROLAMPORTS is the FLOOR enforced on every
+// broadcast. The keeper rewrites DFlow's SetComputeUnitPrice (or injects
+// one if missing) so a low DFlow quote can't leave us below this. Sized
+// for typical-to-elevated mainnet congestion: at 400k CU limit, this
+// works out to ~0.0001 SOL per fire (~$0.015 at SOL ≈ $150).
 export const APPROVAL_PRIORITY_FEE_LAMPORTS = '100000'
 export const APPROVAL_FALLBACK_CU_LIMIT = 400_000
-export const APPROVAL_FALLBACK_CU_PRICE_MICROLAMPORTS = 50_000
+export const APPROVAL_MIN_CU_PRICE_MICROLAMPORTS = 250_000
 
 // Solana raw tx hard ceiling — packets larger than this can't be
 // transported.
