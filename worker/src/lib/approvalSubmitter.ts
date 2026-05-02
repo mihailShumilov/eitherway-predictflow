@@ -20,7 +20,7 @@ import {
 } from '@solana/web3.js'
 import {
   getAssociatedTokenAddressSync, createTransferCheckedInstruction,
-  unpackAccount, TOKEN_PROGRAM_ID,
+  unpackAccount, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
 } from '@solana/spl-token'
 import bs58 from 'bs58'
 
@@ -357,9 +357,47 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
   const desiredCommission = commissionConfigured
     ? (atomicInput.atomic * BigInt(commissionBps)) / 10000n
     : 0n
-  const commissionAmount = desiredCommission > executorPostUsdc
-    ? executorPostUsdc
-    : desiredCommission
+
+  // Validate the treasury USDC ATA on-chain before including a commission
+  // transfer. A misconfigured env var (wallet pubkey instead of an ATA,
+  // ATA on the wrong mint, or an uninitialized address) would otherwise
+  // make every fire fail with InvalidAccountData. If validation fails,
+  // skip commission for this fire and fold the would-be commission back
+  // into the user refund — the user's order still completes, the operator
+  // sees a clear warning in tail logs to fix the config.
+  let commissionUsable = commissionConfigured && desiredCommission > 0n
+  if (commissionUsable) {
+    try {
+      const treasuryPk = new PublicKey(treasuryAtaStr)
+      const treasuryInfo = await conn.getAccountInfo(treasuryPk, 'confirmed')
+      const ownerOk = treasuryInfo
+        && (treasuryInfo.owner.equals(TOKEN_PROGRAM_ID) || treasuryInfo.owner.equals(TOKEN_2022_PROGRAM_ID))
+      const dataOk = treasuryInfo && treasuryInfo.data.length >= 72
+      const mintMatches = dataOk
+        && treasuryInfo!.data.slice(0, 32).every((b, i) => b === inputMint.toBytes()[i])
+      if (!ownerOk || !dataOk || !mintMatches) {
+        console.warn('approval_treasury_ata_invalid_skipping_commission', {
+          id: orderId,
+          ata: treasuryAtaStr,
+          accountExists: !!treasuryInfo,
+          ownerOk: !!ownerOk,
+          mintMatches: !!mintMatches,
+        })
+        commissionUsable = false
+      }
+    } catch (err) {
+      console.warn('approval_treasury_ata_check_failed_skipping_commission', {
+        id: orderId, ata: treasuryAtaStr, error: String(err),
+      })
+      commissionUsable = false
+    }
+  }
+
+  const commissionAmount = !commissionUsable
+    ? 0n
+    : desiredCommission > executorPostUsdc
+      ? executorPostUsdc
+      : desiredCommission
   const userRefundAmount = executorPostUsdc - commissionAmount
 
   const sweepIxs: TransactionInstruction[] = []
@@ -418,6 +456,7 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     executorResidual: Number(executorPostUsdc),
     commission: Number(commissionAmount),
     userRefund: Number(userRefundAmount),
+    commissionSkipped: commissionConfigured && desiredCommission > 0n && !commissionUsable,
   })
 
   const broadcast = await sendRawTransaction(env, signedBytes)
