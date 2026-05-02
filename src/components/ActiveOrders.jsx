@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react'
-import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud, Shield, Info } from 'lucide-react'
+import { Clock, X, Trash2, Loader2, Check, AlertTriangle, Target, TrendingDown, TrendingUp, Cloud, Shield, Info, ExternalLink } from 'lucide-react'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
 import { useKeeperOrders } from '../hooks/useKeeperOrders'
 import { useKeeperApprovalOrder } from '../hooks/useKeeperApprovalOrder'
+import { useRoute } from '../hooks/useRoute'
 
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -29,8 +30,13 @@ export default function ActiveOrders({ marketId, marketTicker }) {
   const { orders: localOrders, cancelOrder: cancelLocal, cancelAll: cancelAllLocal, clearCompleted: clearLocalCompleted } = useConditionalOrders()
   const { orders: keeperOrders, cancelOrder: cancelKeeper, clearOrders: clearKeeper } = useKeeperOrders()
   const { revokeApproval } = useKeeperApprovalOrder()
+  const { navigate } = useRoute()
   const [revoking, setRevoking] = useState(false)
   const [revokeMsg, setRevokeMsg] = useState(null)
+  // When the panel is rendered without a market filter (i.e. on the
+  // Portfolio page), each row should navigate to its market on click.
+  // On the market detail page (filter set), there's nowhere to go.
+  const isListMode = !marketId && !marketTicker
 
   // Tag orders with their backing source so cancelOrder routes to the right
   // store and the row can show a "cloud" badge for keeper-backed orders.
@@ -181,10 +187,32 @@ export default function ActiveOrders({ marketId, marketTicker }) {
           const TypeIcon = typeConf.icon
           const StatusIcon = statusConf.icon
 
+          const canOpen = isListMode && !!order.marketTicker
+          const handleRowClick = canOpen
+            ? () => navigate({ marketTicker: order.marketTicker, side: order.side, from: 'portfolio' })
+            : undefined
+          const handleRowKey = canOpen
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  navigate({ marketTicker: order.marketTicker, side: order.side, from: 'portfolio' })
+                }
+              }
+            : undefined
           return (
-            <div key={order.id} className={`px-4 py-3 hover:bg-terminal-card/50 transition-colors ${
-              order.status === 'cancelled' ? 'opacity-40' : ''
-            }`}>
+            <div
+              key={order.id}
+              onClick={handleRowClick}
+              onKeyDown={handleRowKey}
+              role={canOpen ? 'button' : undefined}
+              tabIndex={canOpen ? 0 : undefined}
+              title={canOpen ? 'Open market' : undefined}
+              className={`px-4 py-3 transition-colors ${
+                canOpen
+                  ? 'cursor-pointer hover:bg-terminal-card focus:bg-terminal-card focus:outline-none'
+                  : 'hover:bg-terminal-card/50'
+              } ${order.status === 'cancelled' ? 'opacity-40' : ''}`}
+            >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={`flex items-center gap-1 text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${typeConf.bg} ${typeConf.border} border ${typeConf.color}`}>
@@ -223,9 +251,16 @@ export default function ActiveOrders({ marketId, marketTicker }) {
                     <StatusIcon size={10} className={statusConf.spin ? 'animate-spin' : ''} />
                     {statusConf.label}
                   </span>
+                  {canOpen && (
+                    <ExternalLink
+                      size={11}
+                      className="text-terminal-muted"
+                      aria-hidden="true"
+                    />
+                  )}
                   {(order.status === 'pending' || order.status === 'armed' || order.status === 'submitting') && (
                     <button
-                      onClick={() => cancelOrder(order.id)}
+                      onClick={(e) => { e.stopPropagation(); cancelOrder(order.id) }}
                       className="p-1 rounded hover:bg-terminal-red/10 text-terminal-muted hover:text-terminal-red transition-all"
                       title={order.status === 'submitting' ? 'Cancel — broadcast already sent, on-chain outcome may still settle' : 'Cancel order'}
                     >

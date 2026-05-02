@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useCallback } from 'react'
 import { format, formatDistanceToNowStrict } from 'date-fns'
 import { formatMarketClose, formatMarketCloseFull } from '../lib/dateFormat'
 import {
@@ -9,7 +9,8 @@ import {
 import { useWallet } from '../hooks/useWallet'
 import { usePortfolio } from '../hooks/usePortfolio'
 import { useRoute } from '../hooks/useRoute'
-import { SOLANA_NETWORK } from '../config/env'
+import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
+import { fetchWithRetry } from '../lib/http'
 
 const IS_MAINNET = (SOLANA_NETWORK || '').toLowerCase() === 'mainnet'
 const LOCAL_POSITIONS_LABEL = IS_MAINNET ? 'Local positions' : 'Local positions (demo)'
@@ -24,6 +25,78 @@ function daysUntil(iso) {
   if (!iso) return null
   const ms = new Date(iso).getTime() - Date.now()
   return ms / 86400000
+}
+
+// On-demand ticker resolution for a portfolio position whose stored
+// `ticker` is missing. Tries cheaper lookups first:
+//   1. /market/by-mint — works for wallet positions (we have the mint).
+//   2. /search?q=<question> → /events?seriesTickers=… — works for any
+//      position whose question text is searchable on DFlow.
+// Returns the ticker string or null. Async; never throws.
+async function resolveTickerForPosition(p) {
+  if (!p) return null
+  // 1. by-mint
+  if (p.mint) {
+    try {
+      const res = await fetchWithRetry(
+        `${DFLOW_PROXY_BASE}/api/v1/market/by-mint/${encodeURIComponent(p.mint)}`,
+      )
+      if (res.ok) {
+        const payload = await res.json()
+        const m = payload?.market || payload?.data || payload
+        const t = m?.ticker || m?.marketTicker || m?.market_ticker
+        if (t) return t
+      }
+    } catch {}
+  }
+  // 2. search → series → match by question + closeTime
+  const eventTitle = p.eventTitle || p.question || ''
+  if (!eventTitle) return null
+  let events = []
+  try {
+    const res = await fetchWithRetry(
+      `${DFLOW_PROXY_BASE}/api/v1/search?q=${encodeURIComponent(eventTitle)}`,
+    )
+    if (res.ok) {
+      const payload = await res.json()
+      events = payload?.events || []
+    }
+  } catch {}
+  const norm = (s) => (s || '').toString().toLowerCase().replace(/["'""''`]/g, '').replace(/\s+/g, ' ').trim()
+  const eventNorm = norm(eventTitle)
+  const titleMatches = events.filter((e) => norm(e.title) === eventNorm)
+  const seriesTickers = Array.from(new Set(
+    (titleMatches.length ? titleMatches : events).map((e) => e.seriesTicker).filter(Boolean),
+  ))
+  if (seriesTickers.length === 0) return null
+  const closeMs = p.closeTime ? new Date(p.closeTime).getTime() : null
+  const questionNorm = norm(p.question)
+  for (const seriesTicker of seriesTickers) {
+    let markets = []
+    try {
+      const res = await fetchWithRetry(
+        `${DFLOW_PROXY_BASE}/api/v1/events?seriesTickers=${encodeURIComponent(seriesTicker)}&withNestedMarkets=true&limit=200`,
+      )
+      if (res.ok) {
+        const payload = await res.json()
+        for (const e of (payload?.events || [])) {
+          for (const m of (e.markets || [])) markets.push(m)
+        }
+      }
+    } catch {}
+    const matches = markets.filter((m) => norm(m.title) === questionNorm)
+    if (matches.length === 1) return matches[0].ticker || null
+    if (matches.length > 1 && closeMs != null) {
+      const ranked = matches
+        .map((m) => ({
+          m,
+          delta: Math.abs(new Date(m.closeTime || 0).getTime() - closeMs),
+        }))
+        .sort((a, b) => a.delta - b.delta)
+      if (ranked[0]?.m?.ticker) return ranked[0].m.ticker
+    }
+  }
+  return null
 }
 
 function settlementColor(days) {
@@ -162,7 +235,7 @@ function SettlementTimeline({ positions, onOpenMarket }) {
         {items.map((item, i) => {
           const c = settlementColor(item.days)
           const pct = Math.max(2, Math.min(100, (item.days / maxDays) * 100))
-          const canOpen = !!(onOpenMarket && item.ticker)
+          const canOpen = !!(onOpenMarket && (item.ticker || item.mint || item.question))
           const handleClick = canOpen ? () => onOpenMarket(item) : undefined
           const handleKey = canOpen
             ? (e) => {
@@ -250,7 +323,7 @@ function SettlementBadge({ won }) {
   )
 }
 
-function PositionsTable({ positions, onOpenMarket }) {
+function PositionsTable({ positions, onOpenMarket, lookingUpKey, getKey }) {
   if (positions.length === 0) {
     return (
       <div className="bg-terminal-surface border border-terminal-border rounded-lg p-8 text-center">
@@ -293,7 +366,12 @@ function PositionsTable({ positions, onOpenMarket }) {
               const pnlKnown = !outcomeUnresolved && p.pnl !== null && p.pnl !== undefined
               const isProfit = pnlKnown && p.pnl > 0
               const isLoss = pnlKnown && p.pnl < 0
-              const canOpen = !!(onOpenMarket && p.ticker)
+              // Show the Open button whenever we have *any* way to resolve
+              // a market — ticker (direct), mint (by-mint lookup), or
+              // question text (search fallback). The handler does the
+              // async resolution at click time.
+              const canOpen = !!(onOpenMarket && (p.ticker || p.mint || p.question))
+              const isLookingUp = canOpen && getKey && lookingUpKey === getKey(p)
               const handleOpen = canOpen ? () => onOpenMarket(p) : undefined
               const handleKey = canOpen
                 ? (e) => {
@@ -376,12 +454,22 @@ function PositionsTable({ positions, onOpenMarket }) {
                     {canOpen ? (
                       <button
                         onClick={(e) => { e.stopPropagation(); onOpenMarket(p) }}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-terminal-border bg-terminal-card hover:bg-terminal-highlight hover:border-terminal-accent text-terminal-muted hover:text-terminal-accent text-[10px] font-medium uppercase tracking-wider transition-colors"
-                        title="Open market"
+                        disabled={isLookingUp}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-terminal-border bg-terminal-card hover:bg-terminal-highlight hover:border-terminal-accent text-terminal-muted hover:text-terminal-accent text-[10px] font-medium uppercase tracking-wider transition-colors disabled:opacity-60 disabled:cursor-progress"
+                        title={isLookingUp ? 'Looking up market on DFlow…' : 'Open market'}
                         aria-label={`Open market: ${p.question}`}
                       >
-                        Open
-                        <ExternalLink size={10} />
+                        {isLookingUp ? (
+                          <>
+                            <Loader2 size={10} className="animate-spin" />
+                            Locating
+                          </>
+                        ) : (
+                          <>
+                            Open
+                            <ExternalLink size={10} />
+                          </>
+                        )}
                       </button>
                     ) : (
                       <span
@@ -409,10 +497,34 @@ export default function Portfolio() {
   const { orders: keeperOrders } = useKeeperOrders()
   const { strategies: dcaStrategies, stopStrategy } = useDCA()
   const { navigate } = useRoute()
-  const handleOpenMarket = (p) => {
-    if (!p?.ticker) return
-    navigate({ marketTicker: p.ticker, side: p.side, from: 'portfolio' })
-  }
+  // Position id currently being looked up — shows a "Locating…" state on
+  // the button so the click feels responsive while we hit DFlow.
+  const [lookingUp, setLookingUp] = useState(null)
+  const positionKey = (p) => `${p.mint || p.marketId || ''}:${p.side || ''}:${p.question || ''}`
+
+  const handleOpenMarket = useCallback(async (p) => {
+    if (!p) return
+    // Best case — we already know the ticker.
+    if (p.ticker) {
+      navigate({ marketTicker: p.ticker, side: p.side, from: 'portfolio' })
+      return
+    }
+    const key = positionKey(p)
+    setLookingUp(key)
+    try {
+      const ticker = await resolveTickerForPosition(p)
+      if (ticker) {
+        navigate({ marketTicker: ticker, side: p.side, from: 'portfolio' })
+      } else {
+        // No alert spam — surface inline. The button title flips back to
+        // "—" and we leave a console hint for diagnostics.
+        // eslint-disable-next-line no-console
+        console.warn('Could not resolve market ticker for position', p)
+      }
+    } finally {
+      setLookingUp(null)
+    }
+  }, [navigate])
   // Either backend may hold orders (keeper for production limit/SL/TP, local
   // for the legacy in-memory fallback). The empty-state gate has to look at
   // both — otherwise a user with only keeper orders sees "No conditional
@@ -517,7 +629,12 @@ export default function Portfolio() {
         </div>
       ) : (
         <>
-          <PositionsTable positions={positions} onOpenMarket={handleOpenMarket} />
+          <PositionsTable
+            positions={positions}
+            onOpenMarket={handleOpenMarket}
+            lookingUpKey={lookingUp}
+            getKey={positionKey}
+          />
           <SettlementTimeline positions={positions} onOpenMarket={handleOpenMarket} />
         </>
       )}
