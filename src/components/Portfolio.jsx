@@ -4,7 +4,7 @@ import { formatMarketClose, formatMarketCloseFull } from '../lib/dateFormat'
 import {
   Wallet, TrendingUp, TrendingDown, DollarSign, Briefcase,
   RefreshCw, Loader2, AlertCircle, ArrowUpRight, ArrowDownRight, Clock,
-  Repeat, StopCircle, CheckCircle2, XCircle, MinusCircle,
+  Repeat, StopCircle, CheckCircle2, XCircle, MinusCircle, ExternalLink,
 } from 'lucide-react'
 import { useWallet } from '../hooks/useWallet'
 import { usePortfolio } from '../hooks/usePortfolio'
@@ -128,7 +128,7 @@ function DcaStrategiesSection({ strategies, onStop }) {
   )
 }
 
-function SettlementTimeline({ positions }) {
+function SettlementTimeline({ positions, onOpenMarket }) {
   const items = positions
     .filter(p => p.closeTime)
     .map(p => ({ ...p, days: daysUntil(p.closeTime) }))
@@ -162,11 +162,37 @@ function SettlementTimeline({ positions }) {
         {items.map((item, i) => {
           const c = settlementColor(item.days)
           const pct = Math.max(2, Math.min(100, (item.days / maxDays) * 100))
+          const canOpen = !!(onOpenMarket && item.ticker)
+          const handleClick = canOpen ? () => onOpenMarket(item) : undefined
+          const handleKey = canOpen
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onOpenMarket(item)
+                }
+              }
+            : undefined
           return (
-            <div key={`${item.marketId || item.mint}-${i}`} className="px-4 py-3">
+            <div
+              key={`${item.marketId || item.mint}-${i}`}
+              onClick={handleClick}
+              onKeyDown={handleKey}
+              role={canOpen ? 'button' : undefined}
+              tabIndex={canOpen ? 0 : undefined}
+              title={canOpen ? 'Open market' : undefined}
+              aria-label={canOpen ? `Open market: ${item.question}` : undefined}
+              className={`px-4 py-3 transition-colors ${
+                canOpen
+                  ? 'cursor-pointer hover:bg-terminal-card focus:bg-terminal-card focus:outline-none'
+                  : ''
+              }`}
+            >
               <div className="flex items-center justify-between gap-2 mb-1.5">
-                <span className="text-xs text-terminal-text truncate flex-1">
+                <span className="text-xs text-terminal-text truncate flex-1 flex items-center gap-1.5">
                   {item.question}
+                  {canOpen && (
+                    <ExternalLink size={10} className="text-terminal-muted shrink-0" />
+                  )}
                 </span>
                 <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${c.bg} ${c.border} ${c.text} shrink-0`}>
                   {c.label}
@@ -249,6 +275,7 @@ function PositionsTable({ positions, onOpenMarket }) {
               <th className="px-4 py-2 font-medium text-right">Current Price</th>
               <th className="px-4 py-2 font-medium text-right">P&amp;L</th>
               <th className="px-4 py-2 font-medium text-right">Settles</th>
+              <th className="px-4 py-2 font-medium text-right w-10" aria-label="Open"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-terminal-border/50">
@@ -329,6 +356,26 @@ function PositionsTable({ positions, onOpenMarket }) {
                       )
                     })() : (
                       <span className="text-terminal-muted">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {canOpen ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onOpenMarket(p) }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded border border-terminal-border bg-terminal-card hover:bg-terminal-highlight hover:border-terminal-accent text-terminal-muted hover:text-terminal-accent text-[10px] font-medium uppercase tracking-wider transition-colors"
+                        title="Open market"
+                        aria-label={`Open market: ${p.question}`}
+                      >
+                        Open
+                        <ExternalLink size={10} />
+                      </button>
+                    ) : (
+                      <span
+                        className="text-terminal-muted/40 text-[10px]"
+                        title="Market identifier unavailable for this position"
+                      >
+                        —
+                      </span>
                     )}
                   </td>
                 </tr>
@@ -457,7 +504,7 @@ export default function Portfolio() {
       ) : (
         <>
           <PositionsTable positions={positions} onOpenMarket={handleOpenMarket} />
-          <SettlementTimeline positions={positions} />
+          <SettlementTimeline positions={positions} onOpenMarket={handleOpenMarket} />
         </>
       )}
 
