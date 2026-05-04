@@ -39,13 +39,22 @@ async function initBackend() {
   initPromise = (async () => {
     try {
       if (ANALYTICS_PROVIDER === 'posthog' && ANALYTICS_WRITE_KEY) {
-        const moduleId = 'posthog' + '-js'
-        const mod = await import(moduleId)
+        // Static dynamic import so Vite produces a proper chunk URL the
+        // browser can fetch — the previous `'posthog' + '-js'` trick made
+        // Vite leave the bare specifier in the output, which fails at
+        // runtime once `posthog-js` is a real dep.
+        const mod = await import('posthog-js')
+        // `defaults: '2026-01-30'` activates PostHog's full recommended
+        // preset for that date: autocapture, pageviews, pageleaves,
+        // exception autocapture, web vitals, heatmaps, dead-click +
+        // rageclick detection, session recording. Bump the date string to
+        // adopt the next preset; PostHog publishes new ones as features
+        // mature. `person_profiles: 'identified_only'` is layered on top
+        // so anonymous browsing doesn't create person records — only the
+        // wallet's pubkey (set via identify() on connect) does.
         mod.default.init(ANALYTICS_WRITE_KEY, {
-          api_host: ANALYTICS_HOST || 'https://app.posthog.com',
-          capture_pageview: true,
-          capture_pageleave: true,
-          autocapture: true,
+          api_host: ANALYTICS_HOST || 'https://us.i.posthog.com',
+          defaults: '2026-01-30',
           person_profiles: 'identified_only',
         })
         backend = {
