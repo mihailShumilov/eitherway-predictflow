@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { X, Sparkles, Crown, AlertCircle, Loader2, Check, Wallet } from 'lucide-react'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { useWallet } from '../../hooks/useWallet'
+import { track, setUserProperties } from '../../lib/analytics'
 import { useUserTier } from '../../hooks/useUserTier'
 import { FEE_CONFIG, isFeeWalletConfigured } from '../../config/fees'
 import { USDC_MINT } from '../../config/env'
@@ -28,6 +29,7 @@ export default function UpgradeModal({ open, tier, onClose, onSuccess }) {
     if (open) {
       setStatus('idle')
       setError(null)
+      track('upgrade_modal_opened', { tier })
     }
   }, [open, tier])
 
@@ -47,10 +49,12 @@ export default function UpgradeModal({ open, tier, onClose, onSuccess }) {
     if (!isFeeWalletConfigured()) {
       setStatus('error')
       setError('Subscription wallet not configured. Set VITE_FEE_WALLET in your environment.')
+      track('upgrade_payment_failed', { tier, reason: 'fee_wallet_unconfigured' })
       return
     }
     setStatus('signing')
     setError(null)
+    track('upgrade_payment_started', { tier, price_usdc: tierConfig.monthlyPriceUSDC })
     try {
       const provider = activeWallet?.getProvider?.()
       if (!provider) throw new Error('No wallet provider — please reconnect')
@@ -82,11 +86,19 @@ export default function UpgradeModal({ open, tier, onClose, onSuccess }) {
         feeAmount: tierConfig.monthlyPriceUSDC,
       })
       setStatus('success')
+      track('upgrade_payment_succeeded', { tier, price_usdc: tierConfig.monthlyPriceUSDC })
+      setUserProperties({
+        tier,
+        tier_upgraded_at: new Date().toISOString(),
+        last_payment_usdc: tierConfig.monthlyPriceUSDC,
+      })
       setTimeout(() => onSuccess?.(tier), 800)
     } catch (err) {
       reportError(err, { context: 'subscription', tier })
       setStatus('error')
-      setError(safeErrorMessage(err, 'Payment failed'))
+      const msg = safeErrorMessage(err, 'Payment failed')
+      setError(msg)
+      track('upgrade_payment_failed', { tier, reason: msg })
     }
   }
 

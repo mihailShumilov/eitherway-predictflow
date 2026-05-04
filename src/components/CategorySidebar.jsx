@@ -2,6 +2,7 @@ import React from 'react'
 import { LayoutGrid, Trophy, Landmark, Bitcoin, TrendingUp, ChevronRight } from 'lucide-react'
 import { useMarkets } from '../hooks/useMarkets'
 import { useRoute } from '../hooks/useRoute'
+import { track } from '../lib/analytics'
 
 const categoryIcons = {
   All: LayoutGrid,
@@ -30,11 +31,16 @@ export default function CategorySidebar() {
     return allMarkets.filter(m => m.category === cat).length
   }
 
-  const goToCategory = (cat) => navigate({ category: cat })
+  const goToCategory = (cat) => {
+    track('category_selected', { category: cat })
+    navigate({ category: cat })
+  }
   const goToSubcategory = (sub) => {
     if (sub === selectedSubcategory) {
+      track('subcategory_cleared', { category: selectedCategory, subcategory: sub })
       navigate({ category: selectedCategory })
     } else {
+      track('subcategory_selected', { category: selectedCategory, subcategory: sub })
       navigate({ category: selectedCategory, subcategory: sub })
     }
   }

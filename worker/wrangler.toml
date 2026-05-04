@@ -52,6 +52,8 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 # only when the request's Origin exactly matches one of these.
 ALLOWED_ORIGIN = "http://localhost:5173,http://localhost:4173"
 SESSION_TTL_SECONDS = "604800"
+POSTHOG_API_KEY = "phc_sR7EboJj98hmJSPADpx9CwsqCsXwACVabqGk9MBJa3Mc"
+POSTHOG_HOST = "https://us.i.posthog.com"
 
 # Production environment.
 [env.production]
@@ -80,4 +82,6 @@ SOLANA_NETWORK = "mainnet"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 ALLOWED_ORIGIN = "https://app.predictflow.org,https://predictflow.app"
 SESSION_TTL_SECONDS = "604800"
+POSTHOG_API_KEY = "phc_sR7EboJj98hmJSPADpx9CwsqCsXwACVabqGk9MBJa3Mc"
+POSTHOG_HOST = "https://us.i.posthog.com"
 

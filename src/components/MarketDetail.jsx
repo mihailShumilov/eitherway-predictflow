@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState } from 'react'
+import React, { Suspense, lazy, useState, useEffect } from 'react'
 import { X, Clock, TrendingUp, DollarSign, Shield, Globe, ArrowLeft, Lock, Share2, Check } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { formatMarketCloseFull } from '../lib/dateFormat'
@@ -10,6 +10,7 @@ import RecentTrades from './RecentTrades'
 import TradePanel from './TradePanel'
 import ActiveOrders from './ActiveOrders'
 import { useConditionalOrders } from '../hooks/useConditionalOrders'
+import { track } from '../lib/analytics'
 
 // Candlestick chart is the single largest dependency in the detail view.
 const CandlestickChart = lazy(() => import('./CandlestickChart'))
@@ -20,6 +21,21 @@ export default function MarketDetail({ market, onClose }) {
   const { activeOrdersForMarket } = useConditionalOrders()
   const containerRef = useFocusTrap(!!market, onClose)
   const [copied, setCopied] = useState(false)
+
+  // Top-of-funnel "viewed" event — fired once per market, used as the entry
+  // point of the trade conversion funnel.
+  useEffect(() => {
+    if (!market) return
+    track('market_detail_viewed', {
+      market_id: market.id,
+      market_ticker: market.ticker,
+      category: market.category,
+      yes_ask: market.yesAsk,
+      no_ask: market.noAsk,
+      volume: market.volume,
+    })
+  }, [market?.id])
+
   if (!market) return null
 
   const orderLines = activeOrdersForMarket(market.id)
@@ -27,6 +43,7 @@ export default function MarketDetail({ market, onClose }) {
   const handleShare = async () => {
     if (typeof window === 'undefined') return
     const url = window.location.href
+    track('market_shared', { market_id: market.id, market_ticker: market.ticker, share_via: navigator.share ? 'web_share' : 'clipboard' })
     try {
       if (navigator.share) {
         await navigator.share({ title: market.question, url })

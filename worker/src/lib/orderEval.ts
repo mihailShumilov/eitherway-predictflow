@@ -8,6 +8,7 @@
 import type { Env } from '../env'
 import { audit } from './audit'
 import { incr } from './metrics'
+import { capturePh } from './posthog'
 import {
   shouldTriggerOrder,
   priceForOrder,
@@ -54,6 +55,7 @@ export async function reapStuckSubmissions(env: Env, marketTicker: string): Prom
       event: 'submit.reaped',
       detail: { marketTicker, count },
     })
+    await capturePh(env, 'system', 'orders_reaped', { market_ticker: marketTicker, count })
   }
   return count
 }
@@ -132,6 +134,16 @@ export async function armAndSubmit(env: Env, order: PendingOrderRow, sidePrice: 
     detail: { sidePrice, triggerPrice: order.trigger_price },
   })
   await incr(env, 'trigger_fired', { marketTicker: order.market_ticker })
+  await capturePh(env, order.wallet, 'order_armed', {
+    order_id: order.id,
+    market_ticker: order.market_ticker,
+    market_id: order.market_id,
+    side: order.side,
+    order_type: order.order_type,
+    trigger_price: order.trigger_price,
+    side_price: sidePrice,
+    flow: order.flow,
+  })
 
   // Hand off to the right submitter for this row's flow. Errors are
   // captured inside the submitter and reflected in the row's status.

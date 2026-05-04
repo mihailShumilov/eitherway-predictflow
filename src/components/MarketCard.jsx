@@ -5,6 +5,7 @@ import { formatMarketCloseFull } from '../lib/dateFormat'
 import { formatUsd, priceToPercent, humanizeOutcomeLabel } from '../lib/format'
 import { isMarketTradeable } from '../lib/normalize'
 import { usePriceFlash } from '../hooks/useLivePrices'
+import { track } from '../lib/analytics'
 
 function getUrgencyColor(closeTime) {
   if (!closeTime) return 'text-terminal-muted'
@@ -42,9 +43,21 @@ export default function MarketCard({ market, onSelect }) {
       ? 'animate-flash-red'
       : ''
 
+  const handleSelect = () => {
+    track('market_card_clicked', {
+      market_id: market.id,
+      market_ticker: market.ticker,
+      category: market.category,
+      tradeable,
+      yes_ask: market.yesAsk,
+      no_ask: market.noAsk,
+    })
+    onSelect(market)
+  }
+
   return (
     <div
-      onClick={() => onSelect(market)}
+      onClick={handleSelect}
       className={`relative bg-terminal-surface border border-terminal-border rounded-lg p-4 hover:border-terminal-accent/50 hover:bg-terminal-card hover:-translate-y-0.5 hover:shadow-lg hover:shadow-terminal-accent/5 transition-all duration-200 cursor-pointer group ${flashClass}`}
     >
       <div className="flex items-start justify-between gap-3 mb-3">

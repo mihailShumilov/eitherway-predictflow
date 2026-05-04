@@ -150,6 +150,13 @@ export function DCAProvider({ children }) {
   }, [])
 
   const stopStrategy = useCallback((id) => {
+    const strategy = strategiesRef.current.find(s => s.id === id)
+    track('dca_stopped', {
+      strategy_id: id,
+      market_id: strategy?.marketId,
+      side: strategy?.side,
+      executions_count: strategy?.executions?.length ?? 0,
+    })
     patchStrategy(id, { status: 'cancelled', nextRunAt: null })
   }, [patchStrategy])
 

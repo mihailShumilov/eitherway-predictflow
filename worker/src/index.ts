@@ -18,6 +18,7 @@ import { requireSession } from './middleware/auth'
 import { bytesToHex, randomBytes } from './lib/crypto'
 import { parseAllowlist, matchAllowedOrigin } from './lib/origin'
 import { getExecutorPubkey } from './lib/executor'
+import { captureServerException } from './lib/posthog'
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
@@ -80,6 +81,16 @@ app.notFound((c) =>
 )
 app.onError((err, c) => {
   console.error('unhandled', { error: String(err), stack: err.stack, requestId: c.var.requestId })
+  // Forward to PostHog as a $exception so error analytics can surface
+  // unhandled route failures alongside client-side ones. Best-effort:
+  // the wallet may not be in scope here (auth route or pre-auth path).
+  c.executionCtx.waitUntil(
+    captureServerException(c.env, c.var.wallet ?? 'system', err, {
+      request_id: c.var.requestId,
+      path: c.req.path,
+      method: c.req.method,
+    }),
+  )
   return c.json({ error: 'internal_error', requestId: c.var.requestId }, 500)
 })
 

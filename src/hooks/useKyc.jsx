@@ -3,6 +3,7 @@ import { KYC_CHECK_URL } from '../config/env'
 import { WalletContext } from './useWallet'
 import { fetchWithRetry } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
+import { track, setUserProperties } from '../lib/analytics'
 
 const KycContext = createContext(null)
 
@@ -100,20 +101,24 @@ export function KycProvider({ children }) {
   // Public setter: opening the modal without a reason clears any stale upstream
   // rejection text so the default explainer is shown.
   const setShowModal = useCallback((open) => {
+    if (open) track('kyc_modal_opened', { status, source: 'manual' })
     setShowModalState(open)
     if (!open) setReason(null)
-  }, [])
+  }, [status])
 
   // Open the modal with an upstream rejection message (e.g. DFlow /order 403).
   // The message is rendered below the static copy so the user knows *why*
   // trading was just blocked.
   const showModalWithReason = useCallback((msg) => {
-    setReason(typeof msg === 'string' && msg.trim() ? msg.trim() : null)
+    const cleaned = typeof msg === 'string' && msg.trim() ? msg.trim() : null
+    track('kyc_modal_opened', { status, source: 'gate_rejection', has_reason: !!cleaned })
+    setReason(cleaned)
     setShowModalState(true)
-  }, [])
+  }, [status])
 
   const requireKyc = useCallback(() => {
     if (status === 'verified') return true
+    track('kyc_modal_opened', { status, source: 'require_kyc' })
     setReason(null)
     setShowModalState(true)
     return false
@@ -136,13 +141,21 @@ export function KycProvider({ children }) {
     return false
   }, [hasBackend, address, status])
 
-  const markPending = useCallback(() => setStatus('pending'), [])
+  const markPending = useCallback(() => {
+    setStatus('pending')
+    setUserProperties({ kyc_status: 'pending' })
+  }, [])
   const markVerified = useCallback(() => {
     setStatus('verified')
+    setUserProperties({ kyc_status: 'verified', kyc_verified_at: new Date().toISOString() })
+    track('kyc_verified', {})
     setReason(null)
     setShowModalState(false)
   }, [])
-  const reset = useCallback(() => setStatus('unverified'), [])
+  const reset = useCallback(() => {
+    setStatus('unverified')
+    setUserProperties({ kyc_status: 'unverified' })
+  }, [])
 
   return (
     <KycContext.Provider value={{

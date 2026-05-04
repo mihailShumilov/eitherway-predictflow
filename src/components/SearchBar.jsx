@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react'
 import { Search, X } from 'lucide-react'
 import { useMarkets } from '../hooks/useMarkets'
+import { track } from '../lib/analytics'
 
 export default function SearchBar() {
   const { searchQuery, searchMarkets, setSearchQuery } = useMarkets()
@@ -20,6 +21,7 @@ export default function SearchBar() {
     debounceRef.current = setTimeout(() => {
       if (val.trim()) {
         setSearchQuery(val)
+        track('market_searched', { query_length: val.trim().length, source: 'debounce' })
       } else {
         setSearchQuery('')
         searchMarkets('')
@@ -31,6 +33,9 @@ export default function SearchBar() {
     if (e.key === 'Enter') {
       if (debounceRef.current) clearTimeout(debounceRef.current)
       searchMarkets(localQuery)
+      if (localQuery.trim()) {
+        track('market_searched', { query_length: localQuery.trim().length, source: 'enter' })
+      }
     }
     if (e.key === 'Escape') {
       clear()
@@ -38,6 +43,7 @@ export default function SearchBar() {
   }
 
   const clear = () => {
+    if (localQuery) track('market_search_cleared', {})
     setLocalQuery('')
     setSearchQuery('')
     searchMarkets('')

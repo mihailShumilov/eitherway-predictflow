@@ -13,6 +13,7 @@ import { Hono, type Context } from 'hono'
 import type { Env, AppVariables } from '../env'
 import { audit } from '../lib/audit'
 import { incr } from '../lib/metrics'
+import { capturePh } from '../lib/posthog'
 import { encrypt } from '../lib/encryption'
 import { apiError } from '../lib/errors'
 import { base64ToBytes, randomBytes, bytesToHex } from '../lib/crypto'
@@ -308,6 +309,11 @@ orders.post('/', async (c) => {
     .bind(wallet, body.marketTicker!)
     .first<{ id: string }>()
   if (existingNonTerminal) {
+    await capturePh(c.env, wallet, 'order_create_rejected', {
+      reason: 'duplicate_pending_order',
+      market_ticker: body.marketTicker,
+      existing_order_id: existingNonTerminal.id,
+    })
     return apiError(c, 409, 'duplicate_pending_order', {
       existingId: existingNonTerminal.id,
       detail: 'Cancel the existing order for this market before placing another.',
@@ -341,6 +347,17 @@ orders.post('/', async (c) => {
     requestId: c.var.requestId,
   })
   await incr(c.env, 'order_created', { marketTicker: body.marketTicker, orderType: body.orderType, flow })
+
+  await capturePh(c.env, wallet, 'order_created', {
+    order_id: id,
+    market_ticker: body.marketTicker,
+    market_id: body.marketId ?? null,
+    side: body.side,
+    order_type: body.orderType,
+    trigger_price: body.triggerPrice,
+    amount_usdc: body.amountUsdc,
+    flow,
+  })
 
   if (flow === 'approval') {
     try {
@@ -455,6 +472,11 @@ orders.post('/:id/cancel', async (c) => {
   })
   await incr(c.env, 'order_cancelled', { by: 'user' })
 
+  await capturePh(c.env, wallet, 'order_cancelled', {
+    order_id: id,
+    cancelled_by: 'user',
+  })
+
   return c.json({ id, status: 'cancelled', cancelledAt: now })
 })
 
@@ -489,6 +511,10 @@ orders.post('/cancel-by-mint', async (c) => {
       requestId: c.var.requestId,
     })
     await incr(c.env, 'order_cancelled', { by: 'revoke', count: String(cancelled) })
+    await capturePh(c.env, wallet, 'orders_cancelled_by_mint', {
+      count: cancelled,
+      mints,
+    })
   }
   return c.json({ cancelled, mints })
 })
@@ -519,6 +545,10 @@ orders.delete('/', async (c) => {
       event: 'orders.cleared',
       detail: { count: removed, market: market ?? null },
       requestId: c.var.requestId,
+    })
+    await capturePh(c.env, wallet, 'orders_cleared', {
+      count: removed,
+      market_ticker: market ?? null,
     })
   }
   return c.json({ removed })

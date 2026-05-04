@@ -15,6 +15,7 @@ import React, {
 } from 'react'
 import { useWallet } from './useWallet'
 import { listOrders, cancelOrder as apiCancel, clearOrders as apiClear, isKeeperConfigured, getSession } from '../lib/keeperApi'
+import { track } from '../lib/analytics'
 
 const POLL_MS = 5000
 
@@ -104,11 +105,18 @@ export function KeeperOrdersProvider({ children }) {
       // canonical state.
       setOrders(prev => prev.map(o => o.id === id ? { ...o, status: 'cancelled' } : o))
       setTimeout(refresh, 800)
+      const order = orders.find(o => o.id === id)
+      track('keeper_order_cancelled', {
+        order_id: id,
+        market_ticker: order?.marketTicker,
+        order_type: order?.orderType,
+        side: order?.side,
+      })
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err.message || 'Cancel failed' }
     }
-  }, [refresh])
+  }, [refresh, orders])
 
   // Wipe terminal-state rows server-side (cancelled / failed / expired).
   // Optional `marketTicker` narrows to a single market; otherwise clears
@@ -125,6 +133,11 @@ export function KeeperOrdersProvider({ children }) {
         return false
       }))
       setTimeout(refresh, 800)
+      track('keeper_orders_cleared', {
+        scope: marketTicker ? 'market' : 'all',
+        market_ticker: marketTicker ?? null,
+        removed: result?.removed ?? 0,
+      })
       return { ok: true, removed: result?.removed ?? 0 }
     } catch (err) {
       return { ok: false, error: err.message || 'Clear failed' }

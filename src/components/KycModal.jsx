@@ -4,6 +4,7 @@ import { useKyc } from '../hooks/useKyc'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useLegalModal } from '../hooks/useLegalModal'
 import { PROOF_URL } from '../config/env'
+import { track } from '../lib/analytics'
 
 // Reject anything that doesn't look like an https URL on a known host.
 // Prevents a misconfigured env from sending users to a phishing page.
@@ -30,6 +31,7 @@ export default function KycModal() {
   const [awaitingConfirm, setAwaitingConfirm] = useState(false)
 
   const handleDismiss = () => {
+    track('kyc_modal_dismissed', { status, awaiting_confirm: awaitingConfirm, had_reason: !!reason })
     setShowModal(false)
     setAwaitingConfirm(false)
   }
@@ -40,12 +42,14 @@ export default function KycModal() {
 
   const handleVerify = () => {
     if (!PROOF_VERIFY_URL) return
+    track('kyc_verification_started')
     markPending()
     setAwaitingConfirm(true)
     window.open(PROOF_VERIFY_URL, '_blank', 'noopener,noreferrer')
   }
 
   const handleConfirmVerified = () => {
+    track('kyc_marked_verified', { source: 'self_attestation' })
     markVerified()
     setAwaitingConfirm(false)
   }

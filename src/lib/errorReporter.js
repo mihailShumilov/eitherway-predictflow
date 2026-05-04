@@ -4,6 +4,7 @@
 // and /dev/null in prod — the app never crashes on reporting.
 
 import { SENTRY_DSN, IS_DEV, MODE } from '../config/env'
+import { captureException as analyticsCaptureException } from './analytics'
 
 let backend = null
 let queue = []
@@ -59,6 +60,9 @@ export function reportError(err, context) {
     console.debug('[reportError]', err, context)
   }
   withBackend(b => b.captureException(err, context))
+  // Mirror to PostHog as a $exception event so error analytics are visible
+  // even when no Sentry DSN is configured.
+  try { analyticsCaptureException(err, context) } catch { /* never throw */ }
 }
 
 export function reportMessage(msg, context) {

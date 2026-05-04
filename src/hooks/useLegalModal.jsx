@@ -1,12 +1,16 @@
 import React, { createContext, useContext, useState, useCallback } from 'react'
 import LegalModal from '../components/LegalModal'
+import { track } from '../lib/analytics'
 
 const LegalModalContext = createContext(null)
 
 export function LegalModalProvider({ children }) {
   const [activeTab, setActiveTab] = useState(null)
 
-  const openLegal = useCallback((tab = 'terms') => setActiveTab(tab), [])
+  const openLegal = useCallback((tab = 'terms') => {
+    track('legal_modal_opened', { tab })
+    setActiveTab(tab)
+  }, [])
   const closeLegal = useCallback(() => setActiveTab(null), [])
 
   return (

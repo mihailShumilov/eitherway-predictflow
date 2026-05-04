@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { track } from '../lib/analytics'
 
 const DISMISS_KEY = 'predictflow_install_dismissed'
 
@@ -14,11 +15,15 @@ export function useInstallPrompt() {
 
     const onBeforeInstall = (e) => {
       e.preventDefault()
-      if (!dismissed) setDeferred(e)
+      if (!dismissed) {
+        setDeferred(e)
+        track('pwa_install_prompt_available', {})
+      }
     }
     const onInstalled = () => {
       setInstalled(true)
       setDeferred(null)
+      track('pwa_installed', {})
     }
 
     window.addEventListener('beforeinstallprompt', onBeforeInstall)
@@ -31,11 +36,15 @@ export function useInstallPrompt() {
 
   const prompt = useCallback(async () => {
     if (!deferred) return 'unavailable'
+    track('pwa_install_prompt_shown', {})
     deferred.prompt()
     const choice = await deferred.userChoice
     setDeferred(null)
     if (choice.outcome === 'dismissed') {
       localStorage.setItem(DISMISS_KEY, '1')
+      track('pwa_install_prompt_dismissed', { source: 'native_choice' })
+    } else {
+      track('pwa_install_prompt_accepted', {})
     }
     return choice.outcome
   }, [deferred])
@@ -43,6 +52,7 @@ export function useInstallPrompt() {
   const dismiss = useCallback(() => {
     localStorage.setItem(DISMISS_KEY, '1')
     setDeferred(null)
+    track('pwa_install_prompt_dismissed', { source: 'manual' })
   }, [])
 
   return {

@@ -13,6 +13,7 @@ import type { Env, AppVariables } from '../env'
 import { audit } from '../lib/audit'
 import { isValidPubkey } from '../lib/solana-auth'
 import { apiError } from '../lib/errors'
+import { capturePh } from '../lib/posthog'
 
 const nonces = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
@@ -105,6 +106,11 @@ nonces.post('/', async (c) => {
     event: 'durable_nonce.registered',
     detail: { pubkey: body.pubkey, marketTicker: body.marketTicker },
     requestId: c.var.requestId,
+  })
+  await capturePh(c.env, wallet, 'durable_nonce_registered', {
+    nonce_pubkey: body.pubkey,
+    market_ticker: body.marketTicker,
+    rotated: !!(existingForPair && existingForPair.pubkey !== body.pubkey),
   })
 
   return c.json({ pubkey: body.pubkey, marketTicker: body.marketTicker, currentNonce: body.currentNonce })

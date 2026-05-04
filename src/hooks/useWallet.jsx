@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react'
+import { track, identify, resetAnalytics } from '../lib/analytics'
 
 export const WalletContext = createContext(null)
 
@@ -81,6 +82,9 @@ export function WalletProvider({ children }) {
       if (saved) {
         setAddress(saved)
         setActiveWalletId(savedWallet)
+        // Re-identify on hot reload / page refresh so PostHog person stays
+        // bound to the wallet without requiring a fresh `connect` click.
+        identify(saved, { wallet_address: saved, wallet_provider: savedWallet })
       }
     }
     check()
@@ -101,6 +105,10 @@ export function WalletProvider({ children }) {
         // complete the connect flow in a single tap.
         const deep = isMobileDevice() ? mobileDeepLink(walletId) : null
         const target = deep || wallet.downloadUrl
+        track('wallet_provider_redirect', {
+          wallet_provider: walletId,
+          target: deep ? 'deep_link' : 'download',
+        })
         // eslint-disable-next-line no-restricted-globals
         window.location.href = target
         setConnecting(false)
@@ -115,9 +123,20 @@ export function WalletProvider({ children }) {
         setActiveWalletId(walletId)
         localStorage.setItem('predictflow_wallet', pubkey)
         localStorage.setItem('predictflow_wallet_id', walletId)
+        identify(pubkey, {
+          wallet_address: pubkey,
+          wallet_provider: walletId,
+          is_mobile: isMobileDevice(),
+        })
+        track('wallet_connected', { wallet_provider: walletId, wallet_address: pubkey })
       }
-    } catch {
-      // user rejected or provider threw — surface nothing; UI stays in disconnected state
+    } catch (err) {
+      // user rejected or provider threw — surface nothing in the UI but
+      // still emit an analytics breadcrumb so we can see drop-off rates.
+      track('wallet_connect_failed', {
+        wallet_provider: walletId,
+        reason: err?.message || 'unknown',
+      })
     } finally {
       setConnecting(false)
     }
@@ -130,9 +149,11 @@ export function WalletProvider({ children }) {
       connectWallet(available[0].id)
     } else if (available.length > 1) {
       setShowPicker(true)
+      track('wallet_picker_opened', { available_count: available.length, source: 'auto' })
     } else {
       // No wallets detected, show picker with download links
       setShowPicker(true)
+      track('wallet_picker_opened', { available_count: 0, source: 'no_provider' })
     }
   }, [connectWallet])
 
@@ -146,11 +167,13 @@ export function WalletProvider({ children }) {
     } catch {
       // ignore
     }
+    track('wallet_disconnected', { wallet_provider: activeWalletId, wallet_address: address })
+    resetAnalytics()
     setAddress(null)
     setActiveWalletId(null)
     localStorage.removeItem('predictflow_wallet')
     localStorage.removeItem('predictflow_wallet_id')
-  }, [activeWalletId])
+  }, [activeWalletId, address])
 
   const shortAddress = address
     ? `${address.slice(0, 4)}...${address.slice(-4)}`

@@ -45,6 +45,7 @@ import {
 
 import { useWallet } from './useWallet'
 import { useKyc } from './useKyc'
+import { track } from '../lib/analytics'
 import {
   USDC_MINT, SOLANA_RPC_ENDPOINTS, SOLANA_RPC_URL,
 } from '../config/env'
@@ -276,7 +277,15 @@ export function useKeeperApprovalOrder() {
       )
       return tx
     }
+    track('approval_sign_started', {
+      market_id: market.id, market_ticker: market.ticker, side, order_type: orderType,
+      input_mint: inputMintStr, output_mint: outputMintStr,
+    })
     const signature = await signSendConfirm({ provider, conn, buildTx })
+    track('approval_signed', {
+      market_id: market.id, market_ticker: market.ticker, order_type: orderType,
+      input_mint: inputMintStr, atomic_delegated: totalDelegated, signature,
+    })
 
     // 8. Register the order with the keeper.
     const order = await placeOrder({
@@ -295,6 +304,11 @@ export function useKeeperApprovalOrder() {
       userInputAta: userATA.toBase58(),
       inputMint: inputMintStr,
       outputMint: outputMintStr,
+    })
+    track('keeper_order_placed', {
+      order_id: order?.id, market_id: market.id, market_ticker: market.ticker,
+      side, order_type: orderType, trigger_price: triggerPrice, amount_usdc: amountUsdc,
+      flow: 'approval',
     })
 
     return order
@@ -336,7 +350,9 @@ export function useKeeperApprovalOrder() {
       }
       return tx
     }
+    track('approval_revoke_started', { mints: mintList })
     const signature = await signSendConfirm({ provider, conn, buildTx })
+    track('approval_revoked', { mints: mintList, signature })
     return { signature }
   }, [connected, connect, address, activeWallet])
 

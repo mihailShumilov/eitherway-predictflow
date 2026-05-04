@@ -2,7 +2,7 @@
 // plus the active referrer captured from a ?ref= URL param. Self-referrals
 // are filtered out by getActiveReferrerWallet.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useWallet } from './useWallet'
 import {
   generateReferralCode,
@@ -11,6 +11,7 @@ import {
   getActiveReferrerWallet,
   registerReferralCode,
 } from '../services/referralService'
+import { track, setUserProperties } from '../lib/analytics'
 
 export function useReferral() {
   const { address } = useWallet()
@@ -37,6 +38,18 @@ export function useReferral() {
   const code = useMemo(() => generateReferralCode(address), [address])
   const link = useMemo(() => getReferralLink(code), [code])
   const referrer = useMemo(() => getActiveReferrerWallet(address), [address])
+
+  // Fire once whenever a referrer first becomes visible for this wallet —
+  // equivalent to "this user is attributed to <referrer>". Stable via ref so
+  // we don't re-fire on every memo recomputation.
+  const reportedReferrerRef = useRef(null)
+  useEffect(() => {
+    if (referrer && reportedReferrerRef.current !== referrer) {
+      reportedReferrerRef.current = referrer
+      track('referral_applied', { referrer_wallet: referrer, wallet_address: address })
+      setUserProperties({ referrer_wallet: referrer })
+    }
+  }, [referrer, address])
 
   return { code, link, stats, referrer, hasReferrer: !!referrer }
 }

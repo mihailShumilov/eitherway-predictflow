@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { format, formatDistanceToNowStrict } from 'date-fns'
 import { formatMarketClose, formatMarketCloseFull } from '../lib/dateFormat'
 import {
@@ -11,6 +11,7 @@ import { usePortfolio } from '../hooks/usePortfolio'
 import { useRoute } from '../hooks/useRoute'
 import { DFLOW_PROXY_BASE, SOLANA_NETWORK } from '../config/env'
 import { fetchWithRetry } from '../lib/http'
+import { track } from '../lib/analytics'
 
 const IS_MAINNET = (SOLANA_NETWORK || '').toLowerCase() === 'mainnet'
 const LOCAL_POSITIONS_LABEL = IS_MAINNET ? 'Local positions' : 'Local positions (demo)'
@@ -497,6 +498,18 @@ export default function Portfolio() {
   const { orders: keeperOrders } = useKeeperOrders()
   const { strategies: dcaStrategies, stopStrategy } = useDCA()
   const { navigate } = useRoute()
+
+  // One portfolio_viewed per mount-while-connected — used as the entry point
+  // for retention/engagement analyses.
+  useEffect(() => {
+    if (!connected) return
+    track('portfolio_viewed', {
+      positions_count: count,
+      open_orders_count: orders.length + keeperOrders.length,
+      dca_strategies_count: dcaStrategies.length,
+      total_value: totalValue,
+    })
+  }, [connected])
   // Position id currently being looked up — shows a "Locating…" state on
   // the button so the click feels responsive while we hit DFlow.
   const [lookingUp, setLookingUp] = useState(null)
@@ -504,6 +517,9 @@ export default function Portfolio() {
 
   const handleOpenMarket = useCallback(async (p) => {
     if (!p) return
+    track('portfolio_position_opened', {
+      market_id: p.marketId, market_ticker: p.ticker, side: p.side,
+    })
     // Best case — we already know the ticker.
     if (p.ticker) {
       navigate({ marketTicker: p.ticker, side: p.side, from: 'portfolio' })

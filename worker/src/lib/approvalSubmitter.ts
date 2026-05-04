@@ -34,6 +34,7 @@ import {
 } from './constants'
 import { sendRawTransaction, simulateTransaction } from './heliusRpc'
 import { markOrderFailed } from './orderState'
+import { capturePh } from './posthog'
 import { classifyDflowHttp, type FailureCode } from './failureReason'
 import {
   applyComputeUnitLimitFloor, applyComputeUnitPriceFloor,
@@ -531,6 +532,16 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
   await audit(env, {
     wallet: row.wallet, orderId: row.id, event: 'submit.broadcast',
     detail: { signature: broadcast.signature, marketTicker: row.market_ticker, flow: 'approval' },
+  })
+  await capturePh(env, row.wallet, 'order_broadcast', {
+    order_id: row.id,
+    market_ticker: row.market_ticker,
+    signature: broadcast.signature,
+    flow: 'approval',
+    side: row.side,
+    order_type: row.order_type,
+    commission_amount: Number(commissionAmount),
+    user_refund_amount: Number(userRefundAmount),
   })
 }
 

@@ -1,5 +1,6 @@
 import type { Env } from '../env'
 import { audit } from './audit'
+import { capturePh } from './posthog'
 import type { FailureCode } from './failureReason'
 
 // Centralized terminal-state writer. Persists the stable failure code,
@@ -30,4 +31,13 @@ export async function markOrderFailed(
       id: row.id, code, flow, marketTicker: row.market_ticker, raw: rawDetail.slice(0, 500),
     })
   }
+  // Single point where PostHog learns about a fill failure — every code
+  // path (legacy submitter, approval submitter, simulation gate, decryption
+  // failures) eventually lands here.
+  await capturePh(env, row.wallet, 'order_fill_failed', {
+    order_id: row.id,
+    market_ticker: row.market_ticker,
+    failure_code: code,
+    flow,
+  })
 }

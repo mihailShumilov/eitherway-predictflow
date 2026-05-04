@@ -36,6 +36,7 @@ import type { Env } from '../env'
 import { decrypt } from './encryption'
 import { audit } from './audit'
 import { incr } from './metrics'
+import { capturePh } from './posthog'
 import { CONFIRMATION_GIVE_UP_MS } from './constants'
 import { sendRawTransaction, getSignatureStatusWithRetry } from './heliusRpc'
 import { markOrderFailed } from './orderState'
@@ -177,6 +178,12 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
     event: 'submit.broadcast',
     detail: { signature: sigResult.signature, marketTicker: row.market_ticker },
   })
+  await capturePh(env, row.wallet, 'order_broadcast', {
+    order_id: row.id,
+    market_ticker: row.market_ticker,
+    signature: sigResult.signature,
+    flow: 'durable_nonce_legacy',
+  })
 }
 
 // Single-shot confirmation check, called from the alarm cycle. Does NOT
@@ -226,6 +233,13 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
     })
     await incr(env, 'order_filled', { marketTicker: row.market_ticker })
     await incr(env, 'submit_succeeded', { marketTicker: row.market_ticker })
+    await capturePh(env, row.wallet, 'order_filled', {
+      order_id: row.id,
+      market_ticker: row.market_ticker,
+      fill_price: row.trigger_price,
+      fill_signature: row.fill_signature,
+      confirmation: 'fast',
+    })
     return
   }
   // Confirmation neither succeeded nor errored. Before giving up, retry
@@ -250,6 +264,13 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
         detail: { signature: row.fill_signature, marketTicker: row.market_ticker, lateConfirm: true },
       })
       await incr(env, 'order_filled', { marketTicker: row.market_ticker })
+      await capturePh(env, row.wallet, 'order_filled', {
+        order_id: row.id,
+        market_ticker: row.market_ticker,
+        fill_price: row.trigger_price,
+        fill_signature: row.fill_signature,
+        confirmation: 'late',
+      })
       return
     }
     if (final.error) {
@@ -282,6 +303,13 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
         ok: rebroadcast.ok,
         error: rebroadcast.ok ? null : rebroadcast.error,
         ageMs,
+      })
+      await capturePh(env, row.wallet, 'order_rebroadcast', {
+        order_id: row.id,
+        market_ticker: row.market_ticker,
+        signature: row.fill_signature,
+        age_ms: ageMs,
+        ok: rebroadcast.ok,
       })
     } catch (err) {
       // Non-fatal: a transient decrypt or RPC failure here is fine because
@@ -405,5 +433,7 @@ async function markFailed(
   code: FailureCode,
   rawDetail: string,
 ): Promise<void> {
+  // markOrderFailed fires the `order_fill_failed` PostHog event so callers
+  // (legacy + approval flows) only need this single entry point.
   await markOrderFailed(env, row, code, 'durable_nonce_legacy', rawDetail)
 }

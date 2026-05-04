@@ -74,6 +74,10 @@ export function useTradeSubmit(market) {
     const netAmount = feeCalc.netAmount
     const shares = (netAmount / price).toFixed(2)
 
+    track('trade_quote_requested', {
+      market_id: market.id, market_ticker: market.ticker, side, amount: inputAmount, tier,
+    })
+
     try {
       const outputMint = getTokenMint(market, side)
       if (!outputMint) throw new Error('Market has no tradeable outcome mint')
@@ -82,8 +86,9 @@ export function useTradeSubmit(market) {
       const res = await fetchWithRetry(url, {}, { retries: 1, timeoutMs: 6000 })
       if (res.ok) {
         const data = await res.json()
+        const out = data.outAmount ? (data.outAmount / 1e6).toFixed(4) : shares
         setQuote({
-          outputAmount: data.outAmount ? (data.outAmount / 1e6).toFixed(4) : shares,
+          outputAmount: out,
           priceImpact: data.priceImpact || '0.12',
           fee: feeCalc.feeAmount.toFixed(4),
           feeBps: feeCalc.feeBps,
@@ -95,10 +100,17 @@ export function useTradeSubmit(market) {
           route: data.routePlan?.length || 1,
           source: 'DFlow',
         })
+        track('trade_quote_received', {
+          market_id: market.id, side, amount: inputAmount, output_amount: parseFloat(out),
+          fee: feeCalc.feeAmount, source: 'DFlow', route: data.routePlan?.length || 1,
+        })
       } else {
         throw new Error('Quote API unavailable')
       }
     } catch (err) {
+      track('trade_quote_failed', {
+        market_id: market.id, side, reason: err?.message || 'unknown',
+      })
       if (!ALLOW_SIMULATED_FILLS) {
         setQuote({ error: err.message || 'Unable to fetch quote. Try again.' })
         return
@@ -203,6 +215,7 @@ export function useTradeSubmit(market) {
           // cooldown elapses so we don't pop the wallet on every trade.
           feeStatus = 'rate-limited'
           feeError = 'Fee transfer skipped — too many consecutive failures, retrying later'
+          track('fee_sweep_rate_limited', { market_id: market.id })
         } else {
           try {
             await sweepFee({
@@ -213,11 +226,18 @@ export function useTradeSubmit(market) {
             })
             feeStatus = 'sent'
             recordSweepSuccess()
+            track('fee_sweep_sent', {
+              market_id: market.id, fee_amount: feeCalc.feeAmount,
+              referral_amount: feeCalc.referralAmount, platform_amount: feeCalc.platformAmount,
+            })
           } catch (err) {
             feeStatus = 'failed'
             feeError = safeErrorMessage(err, 'Fee transfer failed')
             recordSweepFailure()
             reportError(err, { context: 'feeTransfer', marketId: market.id })
+            track('fee_sweep_failed', {
+              market_id: market.id, reason: feeError, fee_amount: feeCalc.feeAmount,
+            })
           }
         }
       }
@@ -227,6 +247,12 @@ export function useTradeSubmit(market) {
         txSigned, txSignature, idempotencyKey,
         feeCalc, feeStatus, feeError,
         tier, referrer,
+      })
+      track('trade_succeeded', {
+        market_id: market.id, market_ticker: market.ticker,
+        side, amount: inputAmountUSDC, shares: parseFloat(shares), price,
+        tx_signed: txSigned, tx_signature: txSignature,
+        fee_status: feeStatus, fee_amount: feeCalc.feeAmount, tier,
       })
       setResult({ success: true, order, feeCalc, feeStatus, feeError })
       setQuote(null)

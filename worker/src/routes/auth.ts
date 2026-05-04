@@ -9,6 +9,7 @@ import { apiError } from '../lib/errors'
 import { sha256 } from '@noble/hashes/sha256'
 import { bytesToHex } from '../lib/crypto'
 import { parseAllowlist, matchAllowedOrigin } from '../lib/origin'
+import { capturePh, identifyWallet } from '../lib/posthog'
 
 // Audit logs persist forever. Logging the raw `sid` would mean a future
 // read-only D1 leak hands an attacker every active session id — combined
@@ -79,6 +80,11 @@ auth.post('/challenge', async (c) => {
     requestId: c.var.requestId,
   })
 
+  await capturePh(c.env, wallet, 'auth_challenge_issued', {
+    network: c.env.SOLANA_NETWORK,
+    origin: requestOrigin,
+  })
+
   return c.json({
     nonce: challenge.nonce,
     message: challenge.message,
@@ -110,6 +116,7 @@ auth.post('/verify', async (c) => {
       detail: { reason: result.reason, nonce },
       requestId: c.var.requestId,
     })
+    await capturePh(c.env, wallet, 'auth_verify_failed', { reason: result.reason })
     return apiError(c, 401, 'verify_failed', result.reason)
   }
 
@@ -151,6 +158,16 @@ auth.post('/verify', async (c) => {
     requestId: c.var.requestId,
   })
 
+  await identifyWallet(c.env, wallet, {
+    last_session_minted_at: now,
+    last_session_expires_at: exp,
+    last_session_user_agent: c.req.header('user-agent') ?? null,
+  })
+  await capturePh(c.env, wallet, 'user_signed_in', {
+    session_id: sid,
+    ttl_seconds: ttlSeconds,
+  })
+
   return c.json({ token, expiresAt: exp, wallet, sessionId: sid })
 })
 
@@ -185,6 +202,9 @@ auth.post('/logout', async (c) => {
     detail: { sidHash: sidDigest(payload.sid), by: 'user' },
     requestId: c.var.requestId,
   })
+
+  await capturePh(c.env, payload.wallet, 'user_signed_out', { session_id: payload.sid })
+
   return c.json({ ok: true })
 })
 

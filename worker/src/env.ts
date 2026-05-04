@@ -43,6 +43,10 @@ export type Env = {
   // its on-chain authority is bounded by per-user spl-token approve
   // ceilings — see worker/src/lib/executor.ts for the exact trust model.
   EXECUTOR_SECRET_KEY: string
+
+  // PostHog analytics. Optional — analytics is skipped when unset.
+  POSTHOG_API_KEY?: string
+  POSTHOG_HOST?: string
 }
 
 // Hono context variables we set in middleware so handlers don't have to
