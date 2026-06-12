@@ -323,6 +323,13 @@ export function useTradeSubmit(market) {
       (orderType === 'limit' || orderType === 'stop-loss' || orderType === 'take-profit') &&
       isKeeperConfigured()
     ) {
+      // The approval flow awaits a wallet popup for several seconds. A
+      // re-render or double-click during that window would fire a second
+      // placeOrder before the server's duplicate-check can see the first.
+      // Hold a module-level lock for the duration, mirroring submitMarketTrade.
+      const nonce = `cond:${market.id}:${orderType}:${side}:${amount}`
+      if (submissionLocks.has(nonce)) return
+      submissionLocks.add(nonce)
       setSubmitting(true)
       try {
         const result = await placeApprovalLimit({
@@ -340,6 +347,7 @@ export function useTradeSubmit(market) {
         setResult({ success: false, error: safeErrorMessage(err, 'Keeper placement failed') })
       } finally {
         setSubmitting(false)
+        submissionLocks.delete(nonce)
       }
       return
     }
@@ -381,6 +389,13 @@ export function useTradeSubmit(market) {
       setResult({ success: false, error: 'Enter valid amount and budget' })
       return
     }
+    // startStrategy is synchronous, so a lock released at function end can't
+    // stop a rapid second click from creating a duplicate strategy. Hold the
+    // lock briefly (debounce) and let a timer release it.
+    const nonce = `dca:${market.id}:${side}:${perBuy}:${budget}`
+    if (submissionLocks.has(nonce)) return
+    submissionLocks.add(nonce)
+    setTimeout(() => submissionLocks.delete(nonce), 2000)
     const price = side === 'yes' ? market.yesAsk : market.noAsk
     const strategy = startStrategy({
       marketId: market.id,
