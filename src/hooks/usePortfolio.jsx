@@ -5,7 +5,7 @@ import { fetchWithRetry } from '../lib/http'
 import { reportError } from '../lib/errorReporter'
 import { normalizeMarket } from '../lib/normalize'
 import { buildOnchainEntries } from '../lib/onchainEntries'
-import { backfillPositionFields } from '../lib/storage'
+import { backfillPositionFields, getPositions } from '../lib/storage'
 
 const DFLOW_BASE = DFLOW_PROXY_BASE
 const SOLANA_RPCS = SOLANA_RPC_ENDPOINTS
@@ -89,14 +89,6 @@ function findLocalEntry(positions, marketId, side) {
   return {
     avgPrice: totalShares > 0 ? totalCost / totalShares : matches[0].price,
     shares: totalShares,
-  }
-}
-
-function readLocalPositions() {
-  try {
-    return JSON.parse(localStorage.getItem('predictflow_positions') || '[]')
-  } catch {
-    return []
   }
 }
 
@@ -427,7 +419,7 @@ export function usePortfolio() {
 
     setLoading(true)
     setError(null)
-    const localPositions = readLocalPositions()
+    const localPositions = getPositions()
 
     try {
       const [tokenAccounts, outcomeRaw, onchainEntries] = await Promise.all([

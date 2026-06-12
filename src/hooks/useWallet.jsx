@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react'
 import { track, identify, resetAnalytics } from '../lib/analytics'
+import { safeRemove } from '../lib/storage'
 
 export const WalletContext = createContext(null)
 
@@ -121,8 +122,13 @@ export function WalletProvider({ children }) {
       if (pubkey) {
         setAddress(pubkey)
         setActiveWalletId(walletId)
-        localStorage.setItem('predictflow_wallet', pubkey)
-        localStorage.setItem('predictflow_wallet_id', walletId)
+        // Guard the persistence: a throw in private mode / when storage is full
+        // must NOT fall into the catch below and emit a misleading
+        // wallet_connect_failed — the connection itself already succeeded.
+        try {
+          localStorage.setItem('predictflow_wallet', pubkey)
+          localStorage.setItem('predictflow_wallet_id', walletId)
+        } catch { /* session is in-memory only this load */ }
         identify(pubkey, {
           wallet_address: pubkey,
           wallet_provider: walletId,
@@ -171,8 +177,8 @@ export function WalletProvider({ children }) {
     resetAnalytics()
     setAddress(null)
     setActiveWalletId(null)
-    localStorage.removeItem('predictflow_wallet')
-    localStorage.removeItem('predictflow_wallet_id')
+    safeRemove('predictflow_wallet')
+    safeRemove('predictflow_wallet_id')
   }, [activeWalletId, address])
 
   const shortAddress = address
