@@ -39,6 +39,7 @@ database_id = "34573959-0e38-4b35-9cfa-6e77afefee48"
 #   DFLOW_API_KEY        — production DFlow x-api-key.
 #   HELIUS_RPC_URL       — Helius mainnet RPC URL with API key embedded.
 #   SESSION_SIGNING_KEY  — 32-byte HMAC key for session token signatures.
+#   POSTHOG_API_KEY      — PostHog project key (optional; analytics disabled if unset).
 #
 # Public env vars below.
 [vars]
@@ -52,7 +53,6 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 # only when the request's Origin exactly matches one of these.
 ALLOWED_ORIGIN = "http://localhost:5173,http://localhost:4173"
 SESSION_TTL_SECONDS = "604800"
-POSTHOG_API_KEY = "phc_sR7EboJj98hmJSPADpx9CwsqCsXwACVabqGk9MBJa3Mc"
 POSTHOG_HOST = "https://us.i.posthog.com"
 
 # Production environment.
@@ -82,6 +82,5 @@ SOLANA_NETWORK = "mainnet"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 ALLOWED_ORIGIN = "https://app.predictflow.org,https://predictflow.app"
 SESSION_TTL_SECONDS = "604800"
-POSTHOG_API_KEY = "phc_sR7EboJj98hmJSPADpx9CwsqCsXwACVabqGk9MBJa3Mc"
 POSTHOG_HOST = "https://us.i.posthog.com"
 
