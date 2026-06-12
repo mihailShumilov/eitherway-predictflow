@@ -4,13 +4,9 @@
   "outputDirectory": "dist",
   "framework": "vite",
 
-  "__comment__proxy": "Rewrites below hardcode the dev DFlow host. Before shipping, set DFLOW_UPSTREAM in your Vercel project env and replace this destination with $DFLOW_UPSTREAM/$1 via an edge function or keep per-environment vercel.json variants.",
+  "__comment__proxy": "/api/dflow/* is served by the edge function at api/dflow/[...path].js, which injects DFLOW_API_KEY from server env and restricts methods. Do NOT add a rewrite forwarding /api/dflow straight to DFlow — that is an open relay with no key and no method allowlist.",
 
   "rewrites": [
-    {
-      "source": "/api/dflow/(.*)",
-      "destination": "https://dev-prediction-markets-api.dflow.net/$1"
-    },
     { "source": "/((?!api|assets|scripts|favicon.svg|og-image.svg|manifest.webmanifest|robots.txt).*)", "destination": "/index.html" }
   ],
   "headers": [

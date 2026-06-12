@@ -2,11 +2,13 @@
   command = "vite build"
   publish = "dist"
 
-[[redirects]]
-  from = "/api/dflow/*"
-  to = "https://dev-prediction-markets-api.dflow.net/:splat"
-  status = 200
-  force = true
+# /api/dflow/* is handled by the edge function in netlify/edge-functions/dflow.js,
+# which injects DFLOW_API_KEY from server env and restricts methods. Do NOT add a
+# redirect forwarding /api/dflow straight to DFlow — that is an open relay with no
+# key and no method allowlist.
+[[edge_functions]]
+  path = "/api/dflow/*"
+  function = "dflow"
 
 [[redirects]]
   from = "/*"
