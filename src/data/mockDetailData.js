@@ -1,5 +1,4 @@
 const now = Date.now()
-const minute = 60000
 const hour = 3600000
 
 export function generateCandlesticks(basePrice, resolution = '1h', count = 48) {

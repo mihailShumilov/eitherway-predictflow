@@ -12,6 +12,8 @@ export function safeErrorMessage(err, fallback = 'Something went wrong. Please t
 
   // Strip HTML tags and angle brackets defensively. React already escapes text
   // nodes, but this guards against someone doing dangerouslySetInnerHTML later.
+  // The control-character class is intentional (sanitizing untrusted text).
+  // eslint-disable-next-line no-control-regex
   const stripped = raw.replace(/<[^>]*>/g, '').replace(/[\u0000-\u001f]/g, '').trim()
   if (!stripped) return fallback
   if (stripped.length > MAX_LEN) return stripped.slice(0, MAX_LEN - 1) + '…'

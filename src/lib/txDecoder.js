@@ -8,7 +8,6 @@
 import {
   VersionedTransaction,
   Transaction,
-  PublicKey,
 } from '@solana/web3.js'
 import { USDC_MINT, SPL_TOKEN_PROGRAM } from '../config/env'
 
