@@ -317,14 +317,16 @@ export function OrdersProvider({ children }) {
         if (matching.length === 0) continue
         const livePrice = await fetchLivePrice(matching[0])
         if (livePrice) {
-          // fetchLivePrice returns the legacy {yes, no} ASK pair. Promote to
-          // the bid/ask quad shape — for sells we treat ASK as the best
-          // available BID approximation in the absence of book depth.
+          // fetchLivePrice returns {yes, no} asks plus real {yesBid, noBid}
+          // when the source is the orderbook. Use the real bids for the sell
+          // side (stop-loss / take-profit fill there); only fall back to the
+          // ask as a bid approximation when the book gave us no bid depth
+          // (e.g. the live_data / simulated sources).
           priceCache.current[ticker] = {
             yesAsk: livePrice.yes,
-            yesBid: livePrice.yes,
+            yesBid: Number.isFinite(livePrice.yesBid) ? livePrice.yesBid : livePrice.yes,
             noAsk: livePrice.no,
-            noBid: livePrice.no,
+            noBid: Number.isFinite(livePrice.noBid) ? livePrice.noBid : livePrice.no,
             source: livePrice.source || 'rest',
           }
           evalForTicker(ticker)

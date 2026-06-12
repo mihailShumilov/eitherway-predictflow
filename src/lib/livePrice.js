@@ -55,10 +55,13 @@ export function parseLivePrice(payload, keys) {
   return null
 }
 
-// Derive current YES/NO ask prices from the same orderbook endpoint OrderBook
-// uses on screen. yes_bids = orders to buy YES; no_bids = orders to buy NO.
-// Selling YES at price P is economically the same as buying NO at (1-P), so
-// the best YES ask is `1 - max(no_bid)` (and symmetrically for noAsk).
+// Derive current YES/NO ask AND bid prices from the same orderbook endpoint
+// OrderBook uses on screen. yes_bids = orders to buy YES; no_bids = orders to
+// buy NO. Selling YES at price P is economically the same as buying NO at
+// (1-P), so the best YES ask is `1 - max(no_bid)` (and symmetrically for noAsk).
+// The best price to SELL YES is the highest YES bid directly (max(yes_bid)) —
+// this is the price a stop-loss / take-profit actually fills at, so we return
+// it explicitly rather than approximating the bid with the ask.
 export function deriveAsksFromBook(data) {
   const yesBidKeys = data?.yes_bids ? Object.keys(data.yes_bids).map(parseFloat).filter(Number.isFinite) : []
   const noBidKeys = data?.no_bids ? Object.keys(data.no_bids).map(parseFloat).filter(Number.isFinite) : []
@@ -70,6 +73,9 @@ export function deriveAsksFromBook(data) {
   return {
     yes: yesAsk !== null ? yesAsk : (noAsk !== null ? 1 - noAsk : null),
     no: noAsk !== null ? noAsk : (yesAsk !== null ? 1 - yesAsk : null),
+    // Real best bids (sell side). Null when that side of the book is empty.
+    yesBid: maxYesBid,
+    noBid: maxNoBid,
   }
 }
 
