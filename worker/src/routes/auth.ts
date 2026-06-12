@@ -65,9 +65,10 @@ auth.post('/challenge', async (c) => {
     })
   } catch (err) {
     if (err instanceof ChallengeError) {
-      // ChallengeError is only thrown for input validation (400) right now.
-      // If new statuses are added, narrow them here rather than passing a
-      // bare number — Hono's c.json status param is a typed enum.
+      if (err.status === 429) {
+        return apiError(c, 429, 'rate_limited', err.message)
+      }
+      // Remaining ChallengeError cases are input validation (400).
       return apiError(c, 400, 'invalid_input', err.message)
     }
     throw err

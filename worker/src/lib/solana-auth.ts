@@ -19,6 +19,10 @@ import { base58, randomBytes, bytesToHex } from './crypto'
 
 const CHALLENGE_TTL_SECONDS = 300        // 5 min
 const CHALLENGE_DELETE_AFTER_USE = true  // single-use nonce
+// Cap concurrent unexpired challenges per wallet. A wallet only needs one
+// challenge in flight at a time; this bounds the rows a single pubkey can
+// create and blunts a flood against the auth_challenges table.
+const MAX_ACTIVE_CHALLENGES_PER_WALLET = 5
 
 export type ChallengeRecord = {
   nonce: string
@@ -66,9 +70,24 @@ export async function createChallenge(opts: {
   if (!isValidPubkey(opts.wallet)) {
     throw new ChallengeError(400, 'Invalid wallet pubkey')
   }
+  const now = Date.now()
+  // Opportunistic per-wallet rate limit: drop this wallet's expired rows, then
+  // reject if it already holds the max live challenges. Bounds table growth
+  // from a flood of /auth/challenge requests for a single pubkey.
+  await opts.db
+    .prepare('DELETE FROM auth_challenges WHERE wallet = ? AND expires_at < ?')
+    .bind(opts.wallet, now)
+    .run()
+  const active = await opts.db
+    .prepare('SELECT COUNT(*) AS n FROM auth_challenges WHERE wallet = ? AND expires_at >= ?')
+    .bind(opts.wallet, now)
+    .first<{ n: number }>()
+  if (active && active.n >= MAX_ACTIVE_CHALLENGES_PER_WALLET) {
+    throw new ChallengeError(429, 'Too many pending sign-in challenges; try again shortly')
+  }
+
   const nonceBytes = randomBytes(16)
   const nonce = bytesToHex(nonceBytes)
-  const now = Date.now()
   const issuedAt = new Date(now)
   const expiresAt = new Date(now + CHALLENGE_TTL_SECONDS * 1000)
   const message = buildSiwsMessage({

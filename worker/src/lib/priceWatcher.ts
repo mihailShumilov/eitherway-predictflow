@@ -27,6 +27,7 @@ import {
 import {
   RECONNECT_BASE_MS, RECONNECT_MAX_MS, HEARTBEAT_TIMEOUT_MS, ALARM_REEVAL_MS,
 } from './constants'
+import { runMaintenance, MAINTENANCE_INTERVAL_MS } from './maintenance'
 
 export class PriceWatcher implements DurableObject {
   private state: DurableObjectState
@@ -103,6 +104,7 @@ export class PriceWatcher implements DurableObject {
     //   4. Shut down if nothing is left to watch.
     await reapStuckSubmissions(this.env, this.marketTicker)
     await pollPendingConfirmations(this.env, this.marketTicker)
+    await this.maybeRunMaintenance()
     const open = await fetchOpenOrders(this.env, this.marketTicker)
     if (open.length === 0) {
       this.closeWs()
@@ -114,6 +116,18 @@ export class PriceWatcher implements DurableObject {
     }
     await this.runEval()
     await this.state.storage.setAlarm(Date.now() + ALARM_REEVAL_MS)
+  }
+
+  // Throttled global housekeeping. Runs at most once per DO per interval; the
+  // deletes are idempotent so overlap across market DOs is harmless.
+  private async maybeRunMaintenance(): Promise<void> {
+    const now = Date.now()
+    const last = (await this.state.storage.get<number>('lastMaintenanceAt')) ?? 0
+    if (now - last < MAINTENANCE_INTERVAL_MS) return
+    await runMaintenance(this.env, now).catch((err) =>
+      console.error('maintenance_failed', { error: String(err) }),
+    )
+    await this.state.storage.put('lastMaintenanceAt', now).catch(() => { /* */ })
   }
 
   private async runEval(): Promise<void> {
