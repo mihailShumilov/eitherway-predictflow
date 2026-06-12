@@ -34,6 +34,13 @@ export function getUserTier(walletPubkey) {
   return stored
 }
 
+// SECURITY: tier is stored client-side and is therefore user-manipulable (a
+// user can call this from DevTools to grant themselves WHALE rates). The only
+// impact is revenue — cheaper fees and higher order limits — never fund safety,
+// because the keeper executes orders regardless of client tier and DFlow
+// enforces its own gates. To make tier authoritative, resolve it server-side
+// (keeper /auth/me returning a signed tier claim) or on-chain (a subscription
+// program), and have the fee/limit checks trust that source instead of this.
 export function setUserTier(walletPubkey, tier, { months = 1 } = {}) {
   if (!walletPubkey) return
   if (!TIER_KEYS.includes(tier)) return
