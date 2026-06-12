@@ -17,8 +17,8 @@
 import { ed25519 } from '@noble/curves/ed25519'
 import { base58, randomBytes, bytesToHex } from './crypto'
 
-const CHALLENGE_TTL_SECONDS = 300        // 5 min
-const CHALLENGE_DELETE_AFTER_USE = true  // single-use nonce
+const CHALLENGE_TTL_SECONDS = 300        // 5 min (single-use nonce, claimed
+                                         // atomically in verifyChallenge)
 // Cap concurrent unexpired challenges per wallet. A wallet only needs one
 // challenge in flight at a time; this bounds the rows a single pubkey can
 // create and blunts a flood against the auth_challenges table.
@@ -123,18 +123,25 @@ export async function verifyChallenge(opts: {
   nonce: string
   signatureBase58: string
 }): Promise<{ ok: true; message: string } | { ok: false; reason: string }> {
+  // Atomically claim the challenge: DELETE ... RETURNING removes the row and
+  // hands back its contents in a single statement. The previous
+  // SELECT-then-verify-then-DELETE left a window where two concurrent requests
+  // could both read the row and each mint a session from ONE SIWS signature.
+  // Now only one DELETE can match the row, so at most one caller proceeds.
+  // Trade-off: the nonce is consumed even on an invalid signature — a legit
+  // wallet signs the correct message on the first try, and a fresh challenge
+  // is cheap to request.
   const row = await opts.db
     .prepare(
-      `SELECT nonce, wallet, message, issued_at, expires_at
-         FROM auth_challenges
-        WHERE nonce = ? AND wallet = ?`,
+      `DELETE FROM auth_challenges
+        WHERE nonce = ? AND wallet = ?
+        RETURNING nonce, wallet, message, issued_at, expires_at`,
     )
     .bind(opts.nonce, opts.wallet)
     .first<ChallengeRecord>()
 
   if (!row) return { ok: false, reason: 'Challenge not found or already used' }
   if (row.expires_at < Date.now()) {
-    await opts.db.prepare('DELETE FROM auth_challenges WHERE nonce = ?').bind(row.nonce).run()
     return { ok: false, reason: 'Challenge expired' }
   }
 
@@ -154,9 +161,7 @@ export async function verifyChallenge(opts: {
   const valid = ed25519.verify(signatureBytes, messageBytes, pubkeyBytes)
   if (!valid) return { ok: false, reason: 'Invalid signature' }
 
-  if (CHALLENGE_DELETE_AFTER_USE) {
-    await opts.db.prepare('DELETE FROM auth_challenges WHERE nonce = ?').bind(row.nonce).run()
-  }
+  // The challenge was already claimed (deleted) above — nothing more to do.
   return { ok: true, message: row.message }
 }
 
