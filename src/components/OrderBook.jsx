@@ -207,8 +207,8 @@ export default function OrderBook({ market }) {
           </div>
 
           <div className="space-y-px">
-            {[...asks].reverse().map((level, i) => (
-              <BookRow key={`ask-${i}`} level={level} side="ask" maxTotal={maxTotal} />
+            {[...asks].reverse().map((level) => (
+              <BookRow key={`ask-${level.price.toFixed(4)}`} level={level} side="ask" maxTotal={maxTotal} />
             ))}
           </div>
 
@@ -226,8 +226,8 @@ export default function OrderBook({ market }) {
           </div>
 
           <div className="space-y-px">
-            {bids.map((level, i) => (
-              <BookRow key={`bid-${i}`} level={level} side="bid" maxTotal={maxTotal} />
+            {bids.map((level) => (
+              <BookRow key={`bid-${level.price.toFixed(4)}`} level={level} side="bid" maxTotal={maxTotal} />
             ))}
           </div>
         </div>
