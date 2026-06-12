@@ -26,9 +26,10 @@ function validatedProofUrl(raw) {
 const PROOF_VERIFY_URL = validatedProofUrl(PROOF_URL)
 
 export default function KycModal() {
-  const { showModal, setShowModal, status, reason, markPending, markVerified } = useKyc()
+  const { showModal, setShowModal, status, reason, markPending, markVerified, hasBackend, verifyWithServer } = useKyc()
   const { openLegal } = useLegalModal()
   const [awaitingConfirm, setAwaitingConfirm] = useState(false)
+  const [confirming, setConfirming] = useState(false)
 
   const handleDismiss = () => {
     track('kyc_modal_dismissed', { status, awaiting_confirm: awaitingConfirm, had_reason: !!reason })
@@ -48,7 +49,22 @@ export default function KycModal() {
     window.open(PROOF_VERIFY_URL, '_blank', 'noopener,noreferrer')
   }
 
-  const handleConfirmVerified = () => {
+  const handleConfirmVerified = async () => {
+    if (hasBackend) {
+      // Don't take the user's word for it — re-probe the KYC backend (the DFlow
+      // check). verifyWithServer flips to verified only if the server agrees,
+      // otherwise it resets to unverified and re-shows the modal.
+      setConfirming(true)
+      track('kyc_marked_verified', { source: 'server_probe' })
+      try {
+        await verifyWithServer()
+      } finally {
+        setConfirming(false)
+        setAwaitingConfirm(false)
+      }
+      return
+    }
+    // Demo mode (no backend configured): self-attestation is the only signal.
     track('kyc_marked_verified', { source: 'self_attestation' })
     markVerified()
     setAwaitingConfirm(false)
@@ -140,10 +156,11 @@ export default function KycModal() {
           {awaitingConfirm ? (
             <button
               onClick={handleConfirmVerified}
-              className="w-full py-3 min-h-[44px] rounded-lg font-semibold text-sm bg-terminal-green hover:bg-emerald-500 text-white shadow-lg shadow-terminal-green/20 transition-all flex items-center justify-center gap-2"
+              disabled={confirming}
+              className="w-full py-3 min-h-[44px] rounded-lg font-semibold text-sm bg-terminal-green hover:bg-emerald-500 text-white shadow-lg shadow-terminal-green/20 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Check size={16} />
-              I've verified with Proof
+              {confirming ? 'Checking verification…' : "I've verified with Proof"}
             </button>
           ) : (
             <button
