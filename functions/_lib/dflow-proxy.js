@@ -58,11 +58,13 @@ export async function proxyDflow({ request, env, upstream, subpath = '' }) {
   const auth = buildAuthHeader(env)
   if (auth) headers.set(auth.name, auth.value)
 
-  // Diagnostics — set DFLOW_PROXY_DEBUG=1 in Pages env to enable. Logs
-  // and response headers carry only meta (key presence, header name,
-  // upstream status). The key value itself is never logged. Disable
-  // before public launch by removing the env var.
-  const debug = env.DFLOW_PROXY_DEBUG === '1' || env.DFLOW_PROXY_DEBUG === 'true'
+  // Diagnostics — set DFLOW_PROXY_DEBUG=1 in Pages env to enable. Logs and
+  // response headers carry only meta (key presence, header name, upstream
+  // status); the key value is never logged. Hard-gated OFF when the
+  // environment self-identifies as production, so a stray env var can't leak
+  // diagnostics to real users.
+  const isProd = env.ENVIRONMENT === 'production' || env.CF_PAGES_BRANCH === 'production'
+  const debug = !isProd && (env.DFLOW_PROXY_DEBUG === '1' || env.DFLOW_PROXY_DEBUG === 'true')
 
   let upstreamResp
   try {
@@ -105,8 +107,9 @@ export async function proxyDflow({ request, env, upstream, subpath = '' }) {
     respHeaders.set('x-pf-debug-auth', auth ? auth.name : 'none')
     respHeaders.set('x-pf-debug-key-len', String(env.DFLOW_API_KEY ? env.DFLOW_API_KEY.length : 0))
     respHeaders.set('x-pf-debug-upstream-status', String(upstreamResp.status))
-    const wwwAuth = upstreamResp.headers.get('www-authenticate')
-    if (wwwAuth) respHeaders.set('x-pf-debug-www-authenticate', wwwAuth)
+    // Deliberately NOT echoing upstream `www-authenticate`: it can carry auth
+    // realm/scheme/nonce details that aid an attacker and add nothing the
+    // status code doesn't already convey.
   }
 
   return new Response(upstreamResp.body, {
