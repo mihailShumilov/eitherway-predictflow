@@ -101,6 +101,27 @@ async function rpcCall(method, params) {
   throw lastErr || new Error('All RPC endpoints failed')
 }
 
+// Broadcast a fully-signed, serialized transaction via JSON-RPC. Returns the
+// transaction signature, or throws if every RPC endpoint rejects it. Used by
+// the fee sweep's signTransaction fallback (wallets without
+// signAndSendTransaction sign locally; we must submit the bytes ourselves).
+export async function sendRawTransaction(rawTx) {
+  const bytes = rawTx instanceof Uint8Array ? rawTx : new Uint8Array(rawTx)
+  let b64
+  if (typeof Buffer !== 'undefined') {
+    b64 = Buffer.from(bytes).toString('base64')
+  } else {
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+    b64 = btoa(binary)
+  }
+  const { result } = await rpcCall('sendTransaction', [
+    b64,
+    { encoding: 'base64', skipPreflight: false, maxRetries: 3 },
+  ])
+  return result
+}
+
 export async function getLatestBlockhash() {
   const { result } = await rpcCall('getLatestBlockhash', [{ commitment: 'confirmed' }])
   const value = result?.value || result

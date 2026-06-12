@@ -16,7 +16,7 @@
 
 import { USDC_MINT } from '../config/env'
 import { FEE_CONFIG, isFeeWalletConfigured } from '../config/fees'
-import { buildFeeTransferTransaction } from './feeTransfer'
+import { buildFeeTransferTransaction, sendRawTransaction } from './feeTransfer'
 
 const SWEEP_FAILURE_THRESHOLD = 3
 const SWEEP_COOLDOWN_MS = 5 * 60 * 1000
@@ -76,7 +76,11 @@ export async function sweepFee({ address, activeWallet, feeCalc, referrer }) {
     return await provider.signAndSendTransaction(built.tx)
   }
   if (typeof provider.signTransaction === 'function') {
-    return await provider.signTransaction(built.tx)
+    // Wallet only signs locally — we must broadcast the signed bytes
+    // ourselves. Returning the signed tx without sending would silently
+    // drop the fee on-chain while the caller records it as "sent".
+    const signed = await provider.signTransaction(built.tx)
+    return await sendRawTransaction(signed.serialize())
   }
   throw new Error('Wallet does not support signing')
 }
