@@ -182,7 +182,7 @@ describe('fetchPendingOrders + fetchOpenOrders', () => {
 })
 
 describe('armAndSubmit CAS', () => {
-  it('succeeds when row was pending — issues UPDATE, then submitOrder fire-and-forget', async () => {
+  it('succeeds when row was pending — issues UPDATE, then awaits submitOrder', async () => {
     const updates: Array<{ sql: string }> = []
     const db = {
       prepare(sql: string) {

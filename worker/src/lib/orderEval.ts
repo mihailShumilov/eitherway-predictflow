@@ -145,16 +145,24 @@ export async function armAndSubmit(env: Env, order: PendingOrderRow, sidePrice: 
     flow: order.flow,
   })
 
-  // Hand off to the right submitter for this row's flow. Errors are
-  // captured inside the submitter and reflected in the row's status.
-  const handoff = order.flow === 'approval'
-    ? submitApprovalOrder(env, order.id)
-    : submitOrder(env, order.id)
-  handoff.catch((err) => {
+  // Hand off to the right submitter for this row's flow, AWAITING completion.
+  // In a Durable Object alarm an un-awaited promise has no guarantee of
+  // running before the isolate is suspended — the order would sit in
+  // `submitting` until the reaper recovers it (up to SUBMITTING_REAP_MS later).
+  // Awaiting keeps the submission inside the alarm's lifetime; any overflow is
+  // naturally picked up on the next tick. Errors are captured inside the
+  // submitter and reflected in the row's status; we catch here as a backstop.
+  try {
+    if (order.flow === 'approval') {
+      await submitApprovalOrder(env, order.id)
+    } else {
+      await submitOrder(env, order.id)
+    }
+  } catch (err) {
     console.error('submit_order_unhandled', {
       id: order.id, flow: order.flow, error: String(err),
     })
-  })
+  }
 }
 
 // Evaluate every pending/armed order against the current price quad and
