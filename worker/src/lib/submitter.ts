@@ -217,6 +217,10 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
   }
   if (status.confirmed) {
     const now = Date.now()
+    // NOTE: fill_price records the order's TRIGGER price, not the realized
+    // swap price. The realized price requires parsing the confirmed
+    // transaction's token-balance deltas (a follow-up); treat this value as an
+    // estimate, mirroring the frontend's priceEstimated flag.
     await env.DB
       .prepare(
         `UPDATE orders SET status = 'filled', fill_price = ?, filled_at = ?, updated_at = ?

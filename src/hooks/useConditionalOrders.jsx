@@ -153,6 +153,12 @@ export function OrdersProvider({ children }) {
       }
     }
 
+    // fillPrice here is the trigger-time observed ask, NOT the realized swap
+    // price. DFlow is a matching engine, so the actual fill can differ by the
+    // spread / price improvement / slippage. The realized price isn't available
+    // synchronously (the pipeline returns only a signature, and the indexer
+    // lags), so we record this as an estimate and flag it (priceEstimated) for
+    // downstream P&L to reconcile against on-chain trades later.
     const fillPrice = order.side === 'yes' ? livePrice.yes : livePrice.no
     const shares = order.amount / fillPrice
 
@@ -163,6 +169,7 @@ export function OrdersProvider({ children }) {
       type: order.orderType,
       amount: order.amount,
       price: fillPrice,
+      priceEstimated: true,
       shares: parseFloat(shares.toFixed(2)),
       timestamp: new Date().toISOString(),
       status: 'filled',
@@ -175,7 +182,7 @@ export function OrdersProvider({ children }) {
     })
 
     setOrders(prev => prev.map(o =>
-      o.id === order.id ? { ...o, status: 'filled', filledAt: new Date().toISOString(), fillPrice, txSigned } : o
+      o.id === order.id ? { ...o, status: 'filled', filledAt: new Date().toISOString(), fillPrice, priceEstimated: true, txSigned } : o
     ))
 
     // Surface on the per-market trade tape so RecentTrades shows the fill
