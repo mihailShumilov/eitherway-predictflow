@@ -107,10 +107,15 @@ export const MAX_TX_SIZE = 1500
 
 export function validateTxPayload(input) {
   if (input == null) return { ok: false, error: 'Empty transaction payload' }
-  const length = typeof input === 'string' ? input.length : input.byteLength
-  if (length === 0) return { ok: false, error: 'Empty transaction payload' }
-  if (length > MAX_TX_SIZE * 2) {
-    return { ok: false, error: `Transaction payload too large (${length} bytes)` }
+  // Compare the DECODED byte length against the size cap. A base64 string is
+  // ~4/3 the size of the bytes it encodes, so checking the string length
+  // directly would let a payload nearly 2× the real limit slip through.
+  const byteLength = typeof input === 'string'
+    ? Math.ceil((input.length * 3) / 4)
+    : input.byteLength
+  if (byteLength === 0) return { ok: false, error: 'Empty transaction payload' }
+  if (byteLength > MAX_TX_SIZE) {
+    return { ok: false, error: `Transaction payload too large (${byteLength} bytes)` }
   }
   return { ok: true }
 }
