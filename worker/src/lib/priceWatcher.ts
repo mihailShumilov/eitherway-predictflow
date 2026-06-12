@@ -38,7 +38,8 @@ export class PriceWatcher implements DurableObject {
   // hibernation and crash-recovery converge on the same code path. The
   // previous setTimeout-based reconnect could race the alarm and produce
   // double-`maybeOpen` calls (only the `opening` flag prevented that).
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  // WS liveness is likewise checked in the alarm (see alarm()), not a
+  // setInterval that an isolate eviction would silently drop.
   private lastMessageAt = 0
   private marketTicker: string | null = null
   private opening = false
@@ -112,6 +113,16 @@ export class PriceWatcher implements DurableObject {
       return
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.maybeOpen()
+    } else if (this.lastMessageAt > 0 && Date.now() - this.lastMessageAt > HEARTBEAT_TIMEOUT_MS) {
+      // WS reports OPEN but has been silent past the heartbeat window — DFlow
+      // may be holding a half-open connection. Force-close and reopen. This
+      // liveness check lives in the alarm (not a setInterval) so it still runs
+      // if the isolate was evicted between messages.
+      console.warn('price_watcher_ws_silent_forcing_reconnect', {
+        market: this.marketTicker, sinceMs: Date.now() - this.lastMessageAt,
+      })
+      this.closeWs()
       await this.maybeOpen()
     }
     await this.runEval()
@@ -225,7 +236,6 @@ export class PriceWatcher implements DurableObject {
       this.ws = sock
       this.lastMessageAt = Date.now()
       this.reconnectAttempts = 0
-      this.startHeartbeat()
 
       sock.addEventListener('message', (ev) => this.onMessage(ev))
       sock.addEventListener('close', () => this.onClose())
@@ -281,7 +291,6 @@ export class PriceWatcher implements DurableObject {
   }
 
   private onClose(): void {
-    this.stopHeartbeat()
     this.ws = null
     if (this.marketTicker) {
       incr(this.env, 'ws_disconnect', { marketTicker: this.marketTicker }).catch(() => { /* */ })
@@ -299,25 +308,7 @@ export class PriceWatcher implements DurableObject {
     this.state.storage.setAlarm(Date.now() + delay).catch(() => { /* alarm scheduling races are benign */ })
   }
 
-  private startHeartbeat(): void {
-    this.stopHeartbeat()
-    this.heartbeatTimer = setInterval(() => {
-      if (Date.now() - this.lastMessageAt > HEARTBEAT_TIMEOUT_MS) {
-        // Silent connection — force-close so reconnect logic kicks in.
-        try { this.ws?.close() } catch { /* */ }
-      }
-    }, 15000)
-  }
-
-  private stopHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
-  }
-
   private closeWs(): void {
-    this.stopHeartbeat()
     if (this.ws) {
       try { this.ws.close() } catch { /* */ }
       this.ws = null
