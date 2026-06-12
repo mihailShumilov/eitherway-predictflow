@@ -69,6 +69,13 @@ export const SPL_TOKEN_PROGRAM = str('VITE_SPL_TOKEN_PROGRAM', 'TokenkegQfeZyiNw
 // the portfolio query.
 export const TOKEN_2022_PROGRAM = str('VITE_TOKEN_2022_PROGRAM', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb')
 
+// USDC and DFlow outcome tokens both use 6 decimals by DFlow convention.
+// Canonical scale factor so the `1e6` magic number has one named source.
+// NOTE: this assumes the 6-decimal convention; reading a mint's actual
+// `decimals` on-chain would be the fully general fix.
+export const TOKEN_DECIMALS = 6
+export const TOKEN_SCALE = 10 ** TOKEN_DECIMALS
+
 // KYC / Proof
 export const PROOF_URL = str('VITE_PROOF_URL', 'https://www.dflow.net/proof')
 export const KYC_CHECK_URL = str('VITE_KYC_CHECK_URL', '') // empty = self-attestation

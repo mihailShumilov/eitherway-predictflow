@@ -6,7 +6,7 @@ import { useKyc } from './useKyc'
 import { useUserTier } from './useUserTier'
 import { useReferral } from './useReferral'
 import {
-  DFLOW_QUOTE_URL, USDC_MINT,
+  DFLOW_QUOTE_URL, USDC_MINT, TOKEN_SCALE,
   ALLOW_SYNTHESIZED_MINTS, ALLOW_SIMULATED_FILLS,
 } from '../config/env'
 import { fetchWithRetry, generateIdempotencyKey } from '../lib/http'
@@ -86,7 +86,7 @@ export function useTradeSubmit(market) {
       const res = await fetchWithRetry(url, {}, { retries: 1, timeoutMs: 6000 })
       if (res.ok) {
         const data = await res.json()
-        const out = data.outAmount ? (data.outAmount / 1e6).toFixed(4) : shares
+        const out = data.outAmount ? (data.outAmount / TOKEN_SCALE).toFixed(4) : shares
         setQuote({
           outputAmount: out,
           priceImpact: data.priceImpact || '0.12',
