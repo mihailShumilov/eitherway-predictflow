@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   appendPosition, getPositions, safeGet, safeSet,
   subscribePositions, getPositionsVersion, runMigrations,
@@ -40,6 +40,20 @@ describe('appendPosition', () => {
     expect(getPositionsVersion()).toBe(before + 1)
     expect(calls).toBeGreaterThan(0)
     unsub()
+  })
+
+  it('returns null (does not silently succeed) when the write fails', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const setSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('QuotaExceededError')
+    })
+    try {
+      const result = await appendPosition({ id: 99, marketId: 'm', status: 'filled' })
+      expect(result).toBeNull()
+    } finally {
+      setSpy.mockRestore()
+      errSpy.mockRestore()
+    }
   })
 })
 

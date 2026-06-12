@@ -78,7 +78,13 @@ export function appendPosition(entry) {
     const current = safeGet('predictflow_positions', [])
     const arr = Array.isArray(current) ? current : []
     arr.push(entry)
-    safeSet('predictflow_positions', arr)
+    if (!safeSet('predictflow_positions', arr)) {
+      // localStorage rejected the write (quota exceeded / private mode). Don't
+      // pretend it succeeded — log it and return null so an awaiting caller can
+      // surface a "couldn't save" notice instead of showing stale P&L silently.
+      console.error('appendPosition: failed to persist position (storage full or unavailable)')
+      return null
+    }
     bumpPositionsVersion()
     return entry
   })
@@ -127,7 +133,10 @@ export function backfillPositionFields(updates) {
       return merged
     })
     if (touched > 0) {
-      safeSet('predictflow_positions', next)
+      if (!safeSet('predictflow_positions', next)) {
+        console.error('backfillPositionFields: failed to persist (storage full or unavailable)')
+        return -1
+      }
       bumpPositionsVersion()
     }
     return touched
