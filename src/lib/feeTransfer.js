@@ -122,6 +122,23 @@ export async function sendRawTransaction(rawTx) {
   return result
 }
 
+// Poll getSignatureStatuses until the tx is confirmed/finalized, errors, or the
+// timeout elapses. Throws on on-chain failure or timeout. Used by flows that
+// must not grant an entitlement before the payment actually lands.
+export async function confirmTransaction(signature, { timeoutMs = 60_000, pollMs = 2_000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const { result } = await rpcCall('getSignatureStatuses', [[signature]])
+    const st = result?.value?.[0]
+    if (st) {
+      if (st.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(st.err)}`)
+      if (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized') return st
+    }
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+  throw new Error('Transaction was not confirmed within the timeout')
+}
+
 export async function getLatestBlockhash() {
   const { result } = await rpcCall('getLatestBlockhash', [{ commitment: 'confirmed' }])
   const value = result?.value || result

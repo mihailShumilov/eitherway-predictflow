@@ -6,7 +6,7 @@ import { track, setUserProperties } from '../../lib/analytics'
 import { useUserTier } from '../../hooks/useUserTier'
 import { FEE_CONFIG, isFeeWalletConfigured } from '../../config/fees'
 import { USDC_MINT } from '../../config/env'
-import { buildFeeTransferTransaction } from '../../lib/feeTransfer'
+import { buildFeeTransferTransaction, sendRawTransaction, confirmTransaction } from '../../lib/feeTransfer'
 import { logFeeEvent } from '../../lib/feeLog'
 import { reportError } from '../../lib/errorReporter'
 import { safeErrorMessage } from '../../lib/errorMessage'
@@ -70,13 +70,24 @@ export default function UpgradeModal({ open, tier, onClose, onSuccess }) {
       })
       if (!built) throw new Error('Could not build subscription transaction')
 
+      let signature
       if (typeof provider.signAndSendTransaction === 'function') {
-        await provider.signAndSendTransaction(built.tx)
+        const sent = await provider.signAndSendTransaction(built.tx)
+        signature = sent?.signature || (typeof sent === 'string' ? sent : null)
       } else if (typeof provider.signTransaction === 'function') {
-        await provider.signTransaction(built.tx)
+        // Sign-only wallet: we must broadcast the signed bytes ourselves, or
+        // the payment never reaches the chain while we grant the tier anyway.
+        const signed = await provider.signTransaction(built.tx)
+        signature = await sendRawTransaction(signed.serialize())
       } else {
         throw new Error('Wallet does not support signing')
       }
+      if (!signature) throw new Error('Wallet returned no transaction signature')
+
+      // Only grant the tier once the payment actually confirms on-chain. A
+      // dropped, slot-skipped, or rejected tx would otherwise unlock Pro/Whale
+      // without the USDC ever transferring.
+      await confirmTransaction(signature)
 
       upgradeTier(tier, { months: 1 })
       logFeeEvent({
