@@ -40,7 +40,19 @@ function ensureSocket() {
   if (opening) return
   opening = true
 
-  const sock = new WebSocket(DFLOW_WS_URL)
+  let sock
+  try {
+    sock = new WebSocket(DFLOW_WS_URL)
+  } catch {
+    // A synchronous constructor throw (e.g. malformed URL, blocked by CSP)
+    // fires no close event. Without resetting `opening` and scheduling a
+    // retry here, the singleton would wedge permanently with opening = true
+    // and never reconnect.
+    opening = false
+    ws = null
+    if (subs.size > 0) scheduleReconnect()
+    return
+  }
   ws = sock
 
   sock.addEventListener('open', () => {
