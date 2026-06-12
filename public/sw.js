@@ -49,8 +49,13 @@ self.addEventListener('fetch', (event) => {
   event.respondWith((async () => {
     try {
       const res = await fetch(req)
-      const cache = await caches.open(CACHE_NAME)
-      cache.put(req, res.clone())
+      // Only cache successful responses. Caching a transient 5xx/404 (e.g. the
+      // origin briefly erroring mid-deploy) would otherwise be served as the
+      // app shell on later visits even after the origin recovers.
+      if (res.ok) {
+        const cache = await caches.open(CACHE_NAME)
+        cache.put(req, res.clone())
+      }
       return res
     } catch {
       const cached = await caches.match(req)
