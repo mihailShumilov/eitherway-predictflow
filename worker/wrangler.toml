@@ -28,11 +28,15 @@ tag = "v1"
 new_sqlite_classes = ["PriceWatcher"]
 
 # D1 — durable state for orders, sessions, audit log, durable nonces.
-# Fill database_id after running: wrangler d1 create predictflow
+#
+# The DEFAULT (preview/staging) environment MUST use its own database so a
+# preview deploy can never read or mutate live production orders. Bootstrap it
+# once with `wrangler d1 create predictflow-preview` and paste the returned id
+# below. Until then, deploy only the production environment (`--env production`).
 [[d1_databases]]
 binding = "DB"
-database_name = "predictflow"
-database_id = "34573959-0e38-4b35-9cfa-6e77afefee48"
+database_name = "predictflow-preview"
+database_id = "REPLACE_WITH_PREVIEW_D1_ID"
 
 # Secrets (set with `wrangler secret put <NAME>` per environment, never commit):
 #   SIGNED_TX_KEY        — base64-encoded 32-byte AES-256 key for envelope encryption.
