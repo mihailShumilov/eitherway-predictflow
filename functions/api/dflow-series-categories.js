@@ -66,7 +66,10 @@ export async function onRequest({ request, env }) {
     status: 200,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      'cache-control': `public, max-age=${CACHE_TTL}, s-maxage=${CACHE_TTL}`,
+      // stale-while-revalidate lets the edge serve the cached map instantly
+      // while refreshing in the background, so a mid-hour upstream shape change
+      // is picked up within ~60s instead of being pinned for the full TTL.
+      'cache-control': `public, max-age=${CACHE_TTL}, s-maxage=${CACHE_TTL}, stale-while-revalidate=60`,
     },
   })
   await cache.put(CACHE_URL, out.clone())

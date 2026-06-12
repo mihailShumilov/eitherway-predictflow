@@ -64,7 +64,12 @@ function ensureSocket() {
     // have lost state across a disconnect, so we always send fresh subs.
     const grouped = new Map()
     for (const k of subs.keys()) {
-      const [channel, ticker] = k.split('|')
+      // Split on the FIRST '|' only — a ticker could theoretically contain one,
+      // and `k.split('|')` would then mis-parse the channel/ticker pair.
+      const sep = k.indexOf('|')
+      if (sep === -1) continue
+      const channel = k.slice(0, sep)
+      const ticker = k.slice(sep + 1)
       if (!grouped.has(channel)) grouped.set(channel, new Set())
       grouped.get(channel).add(ticker)
     }
