@@ -97,13 +97,21 @@ async function verifyDelegationOnChain(
   row: ApprovalOrderRow,
   executor: Keypair,
   atomic: bigint,
-): Promise<{ ok: true } | { ok: false; code: FailureCode; raw: string }> {
+): Promise<{ ok: true; tokenProgram: PublicKey } | { ok: false; code: FailureCode; raw: string }> {
   const ata = new PublicKey(row.user_input_ata)
   const info = await conn.getAccountInfo(ata, 'confirmed').catch(() => null)
   if (!info) return { ok: false, code: 'ata_invalid', raw: 'user_input_ata_missing' }
+  // The input mint may be classic SPL (USDC, BUY orders) or Token-2022
+  // (outcome tokens, SELL orders). Pick the program that actually owns the
+  // account — unpackAccount and every downstream transferChecked must use the
+  // same program, or they throw / fail on-chain with IncorrectProgramId.
+  if (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+    return { ok: false, code: 'ata_invalid', raw: `unexpected_owner_program: ${info.owner.toBase58()}` }
+  }
+  const tokenProgram = info.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID
   let acc
   try {
-    acc = unpackAccount(ata, info, TOKEN_PROGRAM_ID)
+    acc = unpackAccount(ata, info, tokenProgram)
   } catch (err) {
     return { ok: false, code: 'ata_invalid', raw: `unpack_failed: ${String(err)}` }
   }
@@ -123,7 +131,7 @@ async function verifyDelegationOnChain(
       raw: `delegated=${acc.delegatedAmount.toString()} need=${atomic.toString()}`,
     }
   }
-  return { ok: true }
+  return { ok: true, tokenProgram }
 }
 
 export async function submitApprovalOrder(env: Env, orderId: string): Promise<void> {
@@ -172,6 +180,10 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     await fail(env, row, verified.code, verified.raw)
     return
   }
+  // The token program that owns the input mint — classic SPL for USDC (BUY)
+  // or Token-2022 for outcome tokens (SELL). Every transferChecked that
+  // touches the input mint / executor ATA must reference this program.
+  const inputTokenProgram = verified.tokenProgram
 
   // Fetch DFlow /order with executor as userPublicKey and the user's wallet
   // as destinationWallet so the swap output lands in the user's account
@@ -247,7 +259,7 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
 
   const userATA = new PublicKey(row.user_input_ata)
   const inputMint = new PublicKey(row.input_mint)
-  const executorATA = getAssociatedTokenAddressSync(inputMint, executor.publicKey)
+  const executorATA = getAssociatedTokenAddressSync(inputMint, executor.publicKey, false, inputTokenProgram)
   const transferIx = createTransferCheckedInstruction(
     userATA,
     inputMint,
@@ -255,6 +267,8 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
     executor.publicKey,
     atomicInput.atomic,
     atomicInput.decimals,
+    [],
+    inputTokenProgram,
   )
 
   const dflowIxs = decompiled.instructions
@@ -414,6 +428,8 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
       executor.publicKey,
       commissionAmount,
       USDC_DECIMALS,
+      [],
+      inputTokenProgram,
     ))
   }
   if (userRefundAmount > 0n) {
@@ -424,6 +440,8 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
       executor.publicKey,
       userRefundAmount,
       USDC_DECIMALS,
+      [],
+      inputTokenProgram,
     ))
   }
 
