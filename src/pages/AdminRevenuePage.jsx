@@ -26,9 +26,13 @@ export default function AdminRevenuePage() {
 
   const summary = useMemo(() => summarizeFeeLog(log), [log])
 
+  // Fail CLOSED: when no fee wallet is configured, the page is restricted to
+  // nobody in production. A dev-only override keeps it viewable locally so the
+  // ops dashboard can be exercised without a configured operator wallet.
+  const isDev = !!import.meta.env?.DEV
   const authorized = isFeeWalletConfigured()
     ? address === FEE_CONFIG.FEE_WALLET
-    : !!address // demo mode — any connected wallet can view
+    : (isDev && !!address)
 
   if (!authorized) {
     return (
