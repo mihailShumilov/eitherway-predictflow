@@ -60,11 +60,28 @@ async function request(path, options = {}) {
   }
   if (session) headers.authorization = `Bearer ${session.token}`
 
-  const res = await fetch(`${KEEPER_API_BASE}${path}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  })
+  // Bound every request so a slow/stalled keeper can't hang the UI forever
+  // (e.g. placeOrder leaving the panel stuck in `submitting`, or the orders
+  // poller queuing unresolved listOrders calls). Default 10s, overridable.
+  const timeoutMs = options.timeoutMs ?? 10_000
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let res
+  try {
+    res = await fetch(`${KEEPER_API_BASE}${path}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new KeeperApiError(0, 'timeout', `keeper request timed out after ${timeoutMs}ms`)
+    }
+    throw new KeeperApiError(0, 'network_error', String(err?.message || err))
+  } finally {
+    clearTimeout(timer)
+  }
   // 204 No Content
   if (res.status === 204) return null
   let payload
