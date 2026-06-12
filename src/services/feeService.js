@@ -57,11 +57,14 @@ export function getTierConfig(tier) {
   return FEE_CONFIG.TIERS[tier] || FEE_CONFIG.TIERS.FREE
 }
 
-// Pure: rounding to 6 decimal places matches USDC precision so the
-// computed feeAmount * 1e6 cleanly converts to lamports.
-function round6(n) {
-  return Math.round(n * 1_000_000) / 1_000_000
-}
+// USDC has 6 decimals. Do all fee math in integer micro-USDC so float rounding
+// can never overcharge the user and the invariants hold exactly:
+//   feeAmount + netAmount === inputAmount
+//   referralAmount + platformAmount === feeAmount
+// The fee itself is floored (rounded in the user's favor), and the platform
+// share absorbs any 1-micro remainder of the referral split.
+const toMicro = (n) => Math.round(n * 1_000_000)
+const fromMicro = (m) => m / 1_000_000
 
 export function calculateFee(inputAmountUSDC, userTier, hasReferrer = false) {
   const tierConfig = getTierConfig(userTier)
@@ -79,24 +82,24 @@ export function calculateFee(inputAmountUSDC, userTier, hasReferrer = false) {
     }
   }
 
-  const feeAmount = round6((inputAmountUSDC * feeBps) / 10_000)
-  const netAmount = round6(inputAmountUSDC - feeAmount)
+  const inputMicro = toMicro(inputAmountUSDC)
+  const feeMicro = Math.floor((inputMicro * feeBps) / 10_000)
+  const netMicro = inputMicro - feeMicro
 
-  let referralAmount = 0
-  let platformAmount = feeAmount
-
+  let referralMicro = 0
+  let platformMicro = feeMicro
   if (hasReferrer) {
-    referralAmount = round6((feeAmount * FEE_CONFIG.REFERRAL_SHARE_PERCENT) / 100)
-    platformAmount = round6(feeAmount - referralAmount)
+    referralMicro = Math.floor((feeMicro * FEE_CONFIG.REFERRAL_SHARE_PERCENT) / 100)
+    platformMicro = feeMicro - referralMicro
   }
 
   return {
     inputAmount: inputAmountUSDC,
-    feeAmount,
-    netAmount,
+    feeAmount: fromMicro(feeMicro),
+    netAmount: fromMicro(netMicro),
     feeBps,
-    referralAmount,
-    platformAmount,
+    referralAmount: fromMicro(referralMicro),
+    platformAmount: fromMicro(platformMicro),
     tier: userTier,
   }
 }

@@ -51,6 +51,30 @@ describe('calculateFee', () => {
     expect(r.feeAmount).toBe(0)
     expect(r.netAmount).toBe(0)
   })
+
+  it('never overcharges: fee is floored, not rounded up', () => {
+    // 33.333333 * 30bps = 0.0999999... micro-USDC; flooring keeps the fee at
+    // or below the exact value so the user is never charged a fraction extra.
+    const r = calculateFee(33.333333, 'FREE')
+    const exactFee = (33.333333 * 30) / 10_000
+    expect(r.feeAmount).toBeLessThanOrEqual(exactFee + 1e-9)
+    // Floored to whole micro-USDC.
+    expect(Math.round(r.feeAmount * 1e6)).toBe(Math.floor(Math.round(33.333333 * 1e6) * 30 / 10_000))
+  })
+
+  it('keeps feeAmount + netAmount === inputAmount exactly (in micro-USDC)', () => {
+    for (const amt of [100, 33.333333, 12.345678, 999.999999, 1.000001]) {
+      const r = calculateFee(amt, 'FREE')
+      const inputMicro = Math.round(amt * 1e6)
+      expect(Math.round(r.feeAmount * 1e6) + Math.round(r.netAmount * 1e6)).toBe(inputMicro)
+    }
+  })
+
+  it('keeps referralAmount + platformAmount === feeAmount exactly', () => {
+    const r = calculateFee(100, 'FREE', true)
+    expect(Math.round(r.referralAmount * 1e6) + Math.round(r.platformAmount * 1e6))
+      .toBe(Math.round(r.feeAmount * 1e6))
+  })
 })
 
 describe('getUserTier / setUserTier', () => {
