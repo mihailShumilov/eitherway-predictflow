@@ -5,6 +5,7 @@ import { reportError } from '../lib/errorReporter'
 import { track } from '../lib/analytics'
 import { safeGet, safeSet, appendPosition } from '../lib/storage'
 import { runOrderPipeline } from '../lib/orderTxPipeline'
+import { fetchLivePrice } from '../lib/livePrice'
 
 const DCAContext = createContext(null)
 
@@ -193,11 +194,30 @@ export function DCAProvider({ children }) {
     firingRef.current.add(strategy.id)
     try {
       const provider = activeWallet?.getProvider?.() || null
+
+      // Price each fill at the CURRENT market price, not the price captured
+      // when the strategy was created. Using a stale referencePrice would make
+      // every share count and P&L figure after the first tick wrong. Fall back
+      // to the last known referencePrice only if no live source is reachable.
+      let fillPrice = strategy.referencePrice
+      try {
+        const live = await fetchLivePrice({
+          eventTicker: strategy.eventTicker,
+          marketTicker: strategy.marketTicker,
+          marketId: strategy.marketId,
+          currentPrice: strategy.referencePrice,
+        })
+        if (live) {
+          const sidePrice = strategy.side === 'yes' ? live.yes : live.no
+          if (Number.isFinite(sidePrice) && sidePrice > 0) fillPrice = sidePrice
+        }
+      } catch { /* keep referencePrice */ }
+
       const execution = await submitDcaBuy({
         strategy,
         address,
         provider,
-        currentPrice: strategy.referencePrice,
+        currentPrice: fillPrice,
       })
 
       if (!execution) {
@@ -217,6 +237,9 @@ export function DCAProvider({ children }) {
         return {
           ...s,
           executions,
+          // Track the most recent fill price so the next tick's fallback (and
+          // any UI reference) reflects reality, not the creation-time price.
+          referencePrice: execution.price,
           nextRunAt: done ? null : new Date(Date.now() + freqMs(s.frequency)).toISOString(),
           status: done ? 'completed' : 'active',
           completedAt: done ? new Date().toISOString() : null,
