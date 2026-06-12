@@ -4,3 +4,8 @@ node_modules
 dist
 *.log
 .DS_Store
+
+# Executor keypair material — generated locally, uploaded to Cloudflare
+# secrets, then shredded. Never commit.
+executor-secret.txt
+*.key
