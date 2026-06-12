@@ -1,5 +1,6 @@
 import React from 'react'
 import { Info, ArrowRight } from 'lucide-react'
+import { FEE_CONFIG } from '../../config/fees'
 
 // Pre-trade transparency block: shows the input/fee/net split so the user
 // sees exactly what's being deducted before signing. Free users get an
@@ -11,6 +12,9 @@ export default function FeeBreakdown({ quote, onUpgradeClick }) {
   const showUpgrade = quote.tier === 'FREE' && quote.inputAmount > 0
   const feePercent = (quote.feeBps / 100).toFixed(2)
   const hasReferral = quote.referralAmount > 0
+  // Derive monetization copy from config so it never drifts from the real fees.
+  const proFeePercent = FEE_CONFIG.TIERS.PRO.swapFeeBps / 100
+  const referralSharePercent = FEE_CONFIG.REFERRAL_SHARE_PERCENT
 
   return (
     <div className="bg-terminal-card border border-terminal-border rounded-lg p-3 space-y-2 text-xs">
@@ -36,7 +40,7 @@ export default function FeeBreakdown({ quote, onUpgradeClick }) {
       />
       {hasReferral && (
         <Row
-          label={<span className="pl-2 text-terminal-muted/80">↳ Referrer share (20%)</span>}
+          label={<span className="pl-2 text-terminal-muted/80">↳ Referrer share ({referralSharePercent}%)</span>}
           value={`$${quote.referralAmount.toFixed(4)}`}
           valueClass="font-mono text-terminal-cyan"
         />
@@ -58,7 +62,7 @@ export default function FeeBreakdown({ quote, onUpgradeClick }) {
           onClick={onUpgradeClick}
           className="w-full mt-2 flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-terminal-accent/10 border border-terminal-accent/30 hover:bg-terminal-accent/15 hover:border-terminal-accent/50 transition-all text-[11px] text-terminal-accent"
         >
-          <span>Upgrade to Pro for 0.15% fee</span>
+          <span>Upgrade to Pro for {proFeePercent}% fee</span>
           <ArrowRight size={12} />
         </button>
       )}
