@@ -63,6 +63,9 @@ type OrderRowConfirmation = {
   trigger_price: number
   fill_signature: string
   updated_at: number
+  // Immutable timestamp of the first successful broadcast. Null only for rows
+  // that broadcast before this column existed — fall back to updated_at there.
+  broadcast_at: number | null
   // Encrypted signed-tx bytes used to re-broadcast a not-yet-landed tx
   // when validators didn't pick it up before Helius's maxRetries
   // exhausted. Both columns are nullable: legacy-flow rows always have
@@ -167,9 +170,11 @@ export async function submitOrder(env: Env, orderId: string): Promise<void> {
 
   // Broadcast succeeded — persist the signature and leave the row in
   // `submitting`. The alarm cycle will pick it up for confirmation polling.
+  // broadcast_at is the immutable baseline for the confirmation-timeout clock;
+  // COALESCE keeps it stable across any later re-broadcast persistence.
   await env.DB
-    .prepare(`UPDATE orders SET fill_signature = ?, updated_at = ? WHERE id = ?`)
-    .bind(sigResult.signature, Date.now(), orderId)
+    .prepare(`UPDATE orders SET fill_signature = ?, broadcast_at = COALESCE(broadcast_at, ?), updated_at = ? WHERE id = ?`)
+    .bind(sigResult.signature, Date.now(), Date.now(), orderId)
     .run()
   console.log('submit_order_broadcast', { id: orderId, signature: sigResult.signature })
   await audit(env, {
@@ -193,7 +198,7 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
   const row = await env.DB
     .prepare(
       `SELECT id, wallet, market_ticker, trigger_price, fill_signature, updated_at,
-              signed_tx_enc, signed_tx_iv
+              broadcast_at, signed_tx_enc, signed_tx_iv
          FROM orders
         WHERE id = ? AND status = 'submitting' AND fill_signature IS NOT NULL`,
     )
@@ -202,7 +207,10 @@ export async function checkSubmittedOrder(env: Env, orderId: string): Promise<vo
   if (!row) return  // moved to filled/failed/cancelled by another path
 
   const status = await getSignatureStatusWithRetry(env, row.fill_signature, 1)
-  const ageMs = Date.now() - row.updated_at
+  // Measure confirmation age from the immutable broadcast time, not updated_at
+  // (which transient rollbacks/re-broadcasts overwrite). Fall back to
+  // updated_at for rows that broadcast before broadcast_at existed.
+  const ageMs = Date.now() - (row.broadcast_at ?? row.updated_at)
   console.log('check_submitted_order', {
     id: orderId,
     signature: row.fill_signature,

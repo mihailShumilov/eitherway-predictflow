@@ -537,11 +537,12 @@ export async function submitApprovalOrder(env: Env, orderId: string): Promise<vo
   }
 
   await env.DB
-    .prepare(`UPDATE orders SET fill_signature = ?, signed_tx_enc = ?, signed_tx_iv = ?, updated_at = ? WHERE id = ?`)
+    .prepare(`UPDATE orders SET fill_signature = ?, signed_tx_enc = ?, signed_tx_iv = ?, broadcast_at = COALESCE(broadcast_at, ?), updated_at = ? WHERE id = ?`)
     .bind(
       broadcast.signature,
       signedEnc ? signedEnc.ciphertext : null,
       signedEnc ? signedEnc.iv : null,
+      Date.now(),
       Date.now(),
       orderId,
     )
